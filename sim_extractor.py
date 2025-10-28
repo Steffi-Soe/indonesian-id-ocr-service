@@ -27,7 +27,6 @@ class SIMExtractor:
         full_address = " ".join(address_lines).upper()
         address_dict = {"name": None, "rt_rw": None, "kel_desa": None, "kecamatan": None, "kabupaten": None}
 
-        # 1. Extract and remove RT/RW first
         rt_rw_match = re.search(r"RT\s*(\d+)\s*RW\s*(\d+)", full_address)
         if rt_rw_match:
             rt, rw = rt_rw_match.group(1).zfill(3), rt_rw_match.group(2).zfill(3)
@@ -39,7 +38,6 @@ class SIMExtractor:
                 address_dict["rt_rw"] = re.sub(r'\s', '', rt_rw_match.group(1))
                 full_address = full_address.replace(rt_rw_match.group(0), "").strip()
 
-        # 2. Extract keyworded fields
         keywords = {
             "kabupaten": r"(?:KOTA|KABUPATEN|KAB)\s+([A-Z\s/]+?)(?=\s+KEC|\s+KEL|\s+DS|$)",
             "kecamatan": r"(?:KEC|KECAMATAN)\s+([A-Z\s/]+?)(?=\s+KOTA|\s+KAB|\s+KEL|\s+DS|$)",
@@ -50,34 +48,26 @@ class SIMExtractor:
             if match:
                 address_dict[key] = match.group(1).strip()
                 full_address = full_address.replace(match.group(0), "").strip()
-    
-        # 3. Post-processing and heuristics for accuracy
         
-        # Fix for cases like "TAYU PATI" being lumped into kecamatan
         if address_dict.get("kecamatan") and not address_dict.get("kabupaten"):
             parts = address_dict["kecamatan"].split()
             if len(parts) > 1:
-                # Heuristic: If the last word matches the birthplace, it's the kabupaten
                 birthplace = all_data.get("Tempat Lahir", "").upper()
                 if birthplace and parts[-1] == birthplace:
                     address_dict["kabupaten"] = parts[-1]
                     address_dict["kecamatan"] = " ".join(parts[:-1])
-                else: # Otherwise, assume the last word is the kabupaten
+                else:
                     address_dict["kabupaten"] = parts[-1]
                     address_dict["kecamatan"] = " ".join(parts[:-1])
 
-        # Handle comma-separated kel_desa and kecamatan (e.g., "SEI BINTI, SAGULUNG")
         comma_match = re.search(r'([A-Z\s]+),\s+([A-Z]+)', full_address)
         if comma_match and not address_dict.get('kecamatan'):
-            # Check if the second part is a plausible kecamatan name
             if len(comma_match.group(2)) > 3:
-                # Avoid assigning parts of a company name here
                 if address_dict.get('kel_desa') is None:
                     address_dict['kel_desa'] = comma_match.group(1).strip()
                 address_dict['kecamatan'] = comma_match.group(2).strip()
                 full_address = full_address.replace(comma_match.group(0), '')
         
-        # Final cleanup for any remaining text
         address_dict["name"] = re.sub(r'\s+', ' ', full_address).strip(" ,.")
         if not address_dict["name"]:
             address_dict["name"] = None
@@ -123,7 +113,6 @@ class SIMExtractor:
         if field_indices['6'] != -1:
             extracted_data['Provinsi'] = re.sub(r'^6\.\s*', '', texts[field_indices['6']])
 
-        # Temporarily clean up birthdate to use as context for address parsing
         temp_cleaned_data = self.cleanup_data(extracted_data.copy())
 
         if field_indices['4'] != -1:
