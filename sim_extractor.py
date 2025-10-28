@@ -1,11 +1,12 @@
 import re
 import numpy as np
 
+
 class SIMExtractor:
     def process_sim(self, ocr_result):
         if not ocr_result or not ocr_result[0]:
             return None
-        
+
         result_dict = ocr_result[0]
         boxes = result_dict.get('dt_polys', [])
         texts = result_dict.get('rec_texts', [])
@@ -19,7 +20,7 @@ class SIMExtractor:
                 'id': i, 'box': np.array(box).astype(np.int32), 'text': text,
                 'y_center': (box[0][1] + box[2][1]) / 2
             })
-            
+
         structured_data = self.post_process(recognized_data)
         return self.cleanup_data(structured_data)
 
@@ -48,7 +49,7 @@ class SIMExtractor:
             if match:
                 address_dict[key] = match.group(1).strip()
                 full_address = full_address.replace(match.group(0), "").strip()
-        
+
         if address_dict.get("kecamatan") and not address_dict.get("kabupaten"):
             parts = address_dict["kecamatan"].split()
             if len(parts) > 1:
@@ -67,11 +68,11 @@ class SIMExtractor:
                     address_dict['kel_desa'] = comma_match.group(1).strip()
                 address_dict['kecamatan'] = comma_match.group(2).strip()
                 full_address = full_address.replace(comma_match.group(0), '')
-        
+
         address_dict["name"] = re.sub(r'\s+', ' ', full_address).strip(" ,.")
         if not address_dict["name"]:
             address_dict["name"] = None
-            
+
         return address_dict
 
     def post_process(self, recognized_data):
@@ -93,11 +94,11 @@ class SIMExtractor:
             sim_num_match = re.search(r'\d{4}-\d{4}-\d{6}', text)
             if sim_num_match:
                 extracted_data['Nomor SIM'] = sim_num_match.group(0)
-            
+
             expiry_date_match = re.search(r'\b(\d{2}-\d{2}-20\d{2})\b', text)
             if expiry_date_match:
                 extracted_data['Berlaku Sampai'] = expiry_date_match.group(0)
-        
+
         field_indices = {'1': -1, '2': -1, '3': -1, '4': -1, '5': -1, '6': -1}
         for i, text in enumerate(texts):
             for key in field_indices.keys():
@@ -117,41 +118,43 @@ class SIMExtractor:
 
         if field_indices['4'] != -1:
             address_start = field_indices['4']
-            
             address_end = len(texts)
+
             if field_indices['5'] != -1:
                 address_end = field_indices['5']
             elif field_indices['6'] != -1:
                 address_end = field_indices['6']
 
             address_text_block = texts[address_start:address_end]
-            
             potential_job = address_text_block[-1]
+
             if field_indices['5'] == -1 and not re.search(r'KOTA|KAB|KEC|KEL|DS|RT|RW|,', potential_job):
-                 extracted_data['Pekerjaan'] = potential_job
-                 address_text_block = address_text_block[:-1]
+                extracted_data['Pekerjaan'] = potential_job
+                address_text_block = address_text_block[:-1]
             elif field_indices['5'] != -1:
-                 extracted_data['Pekerjaan'] = re.sub(r'^5\.\s*', '', texts[field_indices['5']])
+                extracted_data['Pekerjaan'] = re.sub(r'^5\.\s*', '', texts[field_indices['5']])
 
             address_lines = [re.sub(r'^4\.\s*', '', address_text_block[0])] + address_text_block[1:]
             parsed_address = self._parse_address_block(address_lines, temp_cleaned_data)
             extracted_data.update(parsed_address)
-            
+
         return extracted_data
 
     def cleanup_data(self, data):
         cleaned = data.copy()
+
         if data.get('Tempat & Tgl. Lahir'):
             parts = data['Tempat & Tgl. Lahir'].split(',', 1)
             cleaned['Tempat Lahir'] = parts[0].strip()
             if len(parts) > 1:
                 cleaned['Tanggal Lahir'] = parts[1].strip()
-            if 'Tempat & Tgl. Lahir' in cleaned: del cleaned['Tempat & Tgl. Lahir']
-        
+            if 'Tempat & Tgl. Lahir' in cleaned:
+                del cleaned['Tempat & Tgl. Lahir']
+
         if data.get('Gol. Darah - Kelamin'):
             raw_field = data['Gol. Darah - Kelamin']
             parts = [p.strip() for p in raw_field.split('-') if p and p.strip()]
-            
+
             gender = None
             if parts:
                 last_part = parts[-1].upper()
@@ -160,40 +163,42 @@ class SIMExtractor:
                     parts.pop()
 
                 cleaned['Gol. Darah'] = parts[0] if parts else None
-            
+
             if gender == 'PRIA':
                 cleaned['Jenis Kelamin'] = 'LAKI-LAKI'
             elif gender == 'WANITA':
                 cleaned['Jenis Kelamin'] = 'PEREMPUAN'
             else:
                 cleaned['Jenis Kelamin'] = gender
-                
-            if 'Gol. Darah - Kelamin' in cleaned: del cleaned['Gol. Darah - Kelamin']
-            
+
+            if 'Gol. Darah - Kelamin' in cleaned:
+                del cleaned['Gol. Darah - Kelamin']
+
         return cleaned
+
 
 def format_sim_to_json(data):
     return {
-        "status": 200, 
-        "error": False, 
+        "status": 200,
+        "error": False,
         "message": "SIM OCR Processed Successfully",
         "data": {
-            "document_type": "SIM", 
+            "document_type": "SIM",
             "nomor": data.get("Nomor SIM"),
-            "nama": data.get("Nama"), 
+            "nama": data.get("Nama"),
             "tempat_lahir": data.get("Tempat Lahir"),
-            "tgl_lahir": data.get("Tanggal Lahir"), 
+            "tgl_lahir": data.get("Tanggal Lahir"),
             "jenis_kelamin": data.get("Jenis Kelamin"),
             "agama": None,
             "status_perkawinan": None,
-            "pekerjaan": data.get("Pekerjaan"), 
+            "pekerjaan": data.get("Pekerjaan"),
             "kewarganegaraan": None,
             "alamat": {
-                "name": data.get("name"), 
+                "name": data.get("name"),
                 "rt_rw": data.get("rt_rw"),
-                "kel_desa": data.get("kel_desa"), 
+                "kel_desa": data.get("kel_desa"),
                 "kecamatan": data.get("kecamatan"),
-                "kabupaten": data.get("kabupaten"), 
+                "kabupaten": data.get("kabupaten"),
                 "provinsi": data.get("Provinsi")
             }
         }
