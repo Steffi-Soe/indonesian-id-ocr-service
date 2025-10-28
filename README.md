@@ -1,5 +1,5 @@
 # indonesian-id-ocr-service
-#  🪪 🇮🇩 Indonesian Document OCR API (KTP & SIM)
+#  🪪 Indonesian Document OCR API (KTP & SIM)
 
 This project provides a **Flask-based REST API** for extracting structured data from Indonesian identity documents, including **ID Cards (KTP)** and **Driving Licenses (SIM)**, using **PaddleOCR**.
 
