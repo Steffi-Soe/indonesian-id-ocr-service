@@ -1,17 +1,19 @@
-# 🪪 KTP OCR Extractor API
+#  🪪 🇮🇩 Indonesian Document OCR API (KTP & SIM)
 
-This project provides a **Flask-based REST API** for extracting structured data from **Indonesian ID Cards (KTP)** using **PaddleOCR**.
-It performs OCR (Optical Character Recognition), processes text layout intelligently, and formats results into a clean JSON structure.
+This project provides a **Flask-based REST API** for extracting structured data from Indonesian identity documents, including **ID Cards (KTP)** and **Driving Licenses (SIM)**, using **PaddleOCR**.
+
+It automatically identifies the document type, performs Optical Character Recognition (OCR), processes the text intelligently, and formats the results into a clean, standardized JSON structure.
 
 ---
 
 ## 🚀 Features
 
-* 🔤 **OCR powered by PaddleOCR (Bahasa Indonesia model)**
-* 🧠 **Smart text alignment** using spatial and fuzzy matching
-* 🧹 **Post-processing** to clean and normalize field values
-* 📦 **JSON API response** with standardized field structure
-* 🧾 **Supports multi-line fields** (e.g., address)
+*   🔤 **OCR powered by PaddleOCR (Bahasa Indonesia model)**
+*   ✅ **Multi-Document Support:** Accurately processes both KTP and SIM cards.
+*   🔍 **Automatic Document Identification:** Intelligently determines the document type before extraction.
+*   🧠 **Smart text processing** using spatial and regex-based logic.
+*   🧹 **Post-processing** to clean and normalize field values.
+*   📦 **Standardized JSON Output:** Provides a consistent JSON structure for different document types.
 
 ---
 
@@ -25,10 +27,14 @@ Ensure you have Python **3.8+** installed.
 pip install -r requirements.txt
 ```
 
-> ⚠️ `paddlepaddle` (backend for PaddleOCR) might need to be installed manually depending on your system:
+> ⚠️ `paddlepaddle` (the backend for PaddleOCR) might need to be installed manually depending on your system:
 >
 > ```bash
-> pip install paddlepaddle==2.6.1
+> # For CPU
+> pip install paddlepaddle==3.2.0
+>
+> # For GPU (ensure you have a compatible CUDA version)
+> pip install paddlepaddle-gpu==3.2.0
 > ```
 
 ---
@@ -36,11 +42,13 @@ pip install -r requirements.txt
 ## 📁 Project Structure
 
 ```
-ktp-ocr/
+document-ocr/
 │
 ├── app.py                 # Flask web server
-├── ktp_extractor.py       # KTP OCR logic & data formatting
-├── uploads/               # Directory for uploaded KTP images
+├── document_processor.py  # Main processor to identify doc type & route to correct extractor
+├── ktp_extractor.py       # KTP-specific OCR and data formatting logic
+├── sim_extractor.py       # SIM-specific OCR and data formatting logic
+├── uploads/               # Directory for uploaded KTP & SIM images
 ├── requirements.txt       # Python dependencies
 └── README.md              # Project documentation
 ```
@@ -49,30 +57,28 @@ ktp-ocr/
 
 ## 🧠 How It Works
 
-1. You upload or place a KTP image inside the `uploads/` folder.
-2. Send a JSON request containing the filename to the API.
-3. The `KTPExtractor`:
-
-   * Runs **OCR** using PaddleOCR.
-   * Detects fields like `NIK`, `Nama`, `Alamat`, etc.
-   * Cleans and normalizes extracted text.
-4. The API returns structured JSON output.
+1.  You upload a KTP or SIM image to the `uploads/` folder.
+2.  Send a JSON request containing the filename to the API.
+3.  The **`DocumentProcessor`** identifies whether the image is a KTP or a SIM.
+4.  It routes the OCR data to the appropriate extractor (`KTPExtractor` or `SIMExtractor`).
+5.  The extractor detects fields, cleans the text, and normalizes the values.
+6.  The API returns a structured and standardized JSON output.
 
 ---
 
 ## ▶️ Running the Server
 
-1. **Start the Flask API:**
+1.  **Start the Flask API:**
 
-   ```bash
-   python app.py
-   ```
+    ```bash
+    python app.py
+    ```
 
-2. **The API will start at:**
+2.  **The API will start at:**
 
-   ```
-   http://0.0.0.0:5000
-   ```
+    ```
+    http://0.0.0.0:5000
+    ```
 
 ---
 
@@ -81,34 +87,39 @@ ktp-ocr/
 ### **Endpoint**
 
 ```
-POST /ocr/ktp
+POST /ocr/document
 ```
 
 ### **Request Body**
 
 ```json
 {
-    "filename": "ktp_sample.jpg"
+    "filename": "your_image_name.jpg"
 }
 ```
 
 ### **Example cURL**
 
 ```bash
-curl -X POST http://localhost:5000/ocr/ktp \
+curl -X POST http://localhost:5000/ocr/document \
      -H "Content-Type: application/json" \
-     -d '{"filename": "ktp_sample.jpg"}'
+     -d '{"filename": "your_image_name.jpg"}'
 ```
 
-### **Response**
+---
+
+### **✅ Example Responses**
+
+#### **KTP Response**
 
 ```json
 {
     "status": 200,
     "error": false,
-    "message": "Process OCR Successfully",
+    "message": "KTP OCR Processed Successfully",
     "data": {
-        "nik": "3201123456789001",
+        "document_type": "KTP",
+        "nomor": "3201123456789001",
         "nama": "BUDI SANTOSO",
         "tempat_lahir": "Bandung",
         "tgl_lahir": "01-01-1990",
@@ -129,35 +140,69 @@ curl -X POST http://localhost:5000/ocr/ktp \
 }
 ```
 
+#### **SIM Response**
+
+```json
+{
+    "status": 200,
+    "error": false,
+    "message": "SIM OCR Processed Successfully",
+    "data": {
+        "document_type": "SIM",
+        "nomor": "1198-8017-000562",
+        "nama": "MUHAMMAD YUNUS",
+        "tempat_lahir": "JAKARTA",
+        "tgl_lahir": "08-10-1998",
+        "jenis_kelamin": "PRIA",
+        "agama": null,
+        "status_perkawinan": null,
+        "pekerjaan": "PELAJAR/MAHASISWA",
+        "kewarganegaraan": null,
+        "berlaku_sampai": "06-04-2028",
+        "alamat": {
+            "name": "JL.H.OYAR NO.24 PEGANGSAAN DUA",
+            "rt_rw": "002/002",
+            "kel_desa": null,
+            "kecamatan": "KELAPA GADING",
+            "kabupaten": "JAKARTA TIMUR",
+            "provinsi": "METRO JAYA"
+        }
+    }
+}
+```
+
 ---
 
 ## 🧩 Key Components
 
-| File                   | Description                                             |
-| ---------------------- | ------------------------------------------------------- |
-| **`ktp_extractor.py`** | Core OCR extraction and field matching logic.           |
-| **`app.py`**           | Flask API server to handle HTTP requests and responses. |
-| **`uploads/`**         | Folder where KTP images are stored before processing.   |
+| File                        | Description                                                                 |
+| --------------------------- | --------------------------------------------------------------------------- |
+| **`document_processor.py`** | Identifies the document type and orchestrates the extraction process.       |
+| **`ktp_extractor.py`**      | Contains the core logic for KTP data extraction and field matching.         |
+| **`sim_extractor.py`**      | Contains the core logic for SIM data extraction and field matching.         |
+| **`app.py`**                | The Flask API server that handles HTTP requests and responses.              |
+| **`uploads/`**              | Folder where images are stored for processing.                              |
 
 ---
 
 ## ⚙️ Customization
 
-You can modify the following in `ktp_extractor.py`:
+You can modify the following in the extractor files (`ktp_extractor.py`, `sim_extractor.py`):
 
-* **Field Definitions:** Update `self.canonical_fields` to add or remove fields.
-* **OCR Settings:** Adjust `PaddleOCR` parameters (e.g., language or detection sensitivity).
-* **Matching Sensitivity:** Tweak fuzzy matching threshold (`score > 85`).
+*   **Field Definitions:** Update field keywords or add new ones.
+*   **OCR Settings:** Adjust `PaddleOCR` parameters in `document_processor.py`.
+*   **Parsing Logic:** Refine the regular expressions or fuzzy matching thresholds to improve accuracy for specific edge cases.
 
 ---
 
 ## 🧪 Troubleshooting
 
-| Issue                           | Possible Cause         | Fix                                       |
-| ------------------------------- | ---------------------- | ----------------------------------------- |
-| `Warning: Could not read image` | Wrong filename or path | Check that file exists in `uploads/`.     |
-| `OCR returned no results`       | Low-quality image      | Use a clearer or higher-resolution photo. |
-| `paddlepaddle not found`        | OCR backend missing    | Install with `pip install paddlepaddle`.  |
+| Issue                               | Possible Cause                      | Fix                                                          |
+| ----------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
+| `Warning: Could not read image`     | Wrong filename or path              | Check that the file exists in the `uploads/` folder.         |
+| `OCR returned no results`           | Low-quality or blurry image         | Use a clearer, higher-resolution photo.                      |
+| `Could not determine document type` | Image is not a KTP or SIM           | Ensure the uploaded image is a valid Indonesian KTP or SIM.  |
+| `paddlepaddle not found`            | OCR backend is missing              | Install with `pip install paddlepaddle`.                     |
 
 ---
 

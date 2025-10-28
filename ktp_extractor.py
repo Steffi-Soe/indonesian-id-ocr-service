@@ -8,9 +8,9 @@ from thefuzz import process, fuzz
 
 class KTPExtractor:
     def __init__(self):
-        print("Initializing PaddleOCR engine...")
-        self.ocr = PaddleOCR(use_textline_orientation=True, lang='id')
-
+        # print("Initializing PaddleOCR engine...")
+        # self.ocr = PaddleOCR(use_textline_orientation=True, lang='id')
+        
         self.canonical_fields = [
             "PROVINSI", "KABUPATEN", "NIK", "Nama", "Tempat/Tgl Lahir",
             "Jenis Kelamin", "Gol. Darah", "Alamat", "RT/RW", "Kel/Desa",
@@ -22,29 +22,18 @@ class KTPExtractor:
         box = item['box']
         return (box[0][1] + box[3][1]) / 2
 
-    def process_ktp(self, image_path):
-        print(f"\n--- Processing: {os.path.basename(image_path)} ---")
-        image = cv2.imread(image_path)
-        if image is None:
-            print(f"Warning: Could not read image at {image_path}. Skipping.")
-            return None
-        
-        ocr_result = self.ocr.predict(image)
-        
+    def process_ktp(self, ocr_result):
         if not ocr_result or not ocr_result[0]:
-            print(f"Warning: OCR returned no results for {image_path}. Skipping.")
             return None
-            
+        
         result_dict = ocr_result[0]
         if not result_dict or not isinstance(result_dict, dict):
-             print(f"Warning: OCR result is not a valid dictionary for {image_path}. Skipping.")
              return None
 
         boxes = result_dict.get('dt_polys', [])
         texts = result_dict.get('rec_texts', [])
         
         if not texts:
-            print(f"Warning: No text recognized in {image_path}. Skipping.")
             return None
 
         recognized_data = []
@@ -149,12 +138,14 @@ def format_to_target_json(data):
         parts = data.get("Tempat/Tgl Lahir", "").split(',', 1)
         tempat_lahir = parts[0].strip() if len(parts) > 0 else None
         tgl_lahir = parts[1].strip() if len(parts) > 1 else None
+    
     return {
         "status": 200,
         "error": False,
-        "message": "Process OCR Successfully",
+        "message": "KTP OCR Processed Successfully",
         "data": {
-            "nik": data.get("NIK"),
+            "document_type": "KTP",
+            "nomor": data.get("NIK"),
             "nama": data.get("Nama"),
             "tempat_lahir": tempat_lahir,
             "tgl_lahir": tgl_lahir,

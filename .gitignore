@@ -18,6 +18,7 @@ Thumbs.db
 
 # Flask uploads folder
 ktp case/
+sim case/
 
 # Output files
 output_json/

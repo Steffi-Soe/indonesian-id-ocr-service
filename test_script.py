@@ -2,7 +2,7 @@ import cv2
 import os
 from paddleocr import PaddleOCR
 
-FOLDER_PATH = 'C:/Users/User/Desktop/ACS/OCR/KTP Extraction/ktp case/'
+FOLDER_PATH = 'C:/Users/User/Desktop/ACS/OCR/KTP Extraction/sim case/'
 
 print("Initializing a fresh PaddleOCR engine for testing...")
 ocr_engine = PaddleOCR(use_angle_cls=True, lang='id')
