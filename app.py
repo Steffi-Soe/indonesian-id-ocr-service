@@ -1,9 +1,12 @@
 import os
 import json
 from flask import Flask, request, jsonify, Response
+from werkzeug.utils import secure_filename
 from document_processor import DocumentProcessor
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['JSON_SORT_KEYS'] = False
@@ -12,34 +15,44 @@ print("Loading Document Processor...")
 processor = DocumentProcessor()
 print("Processor loaded. Flask server is ready.")
 
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 @app.route('/ocr/document', methods=['POST'])
 def process_document_image():
-    if not request.is_json:
-        return jsonify({"status": 400, "error": True, "message": "Bad Request: Missing JSON body"}), 400
+    if 'image' not in request.files:
+        return jsonify({"status": 400, "error": True, "message": "Bad Request: 'image' part is missing in the form data"}), 400
 
-    data = request.get_json()
-    filename = data.get('filename')
+    file = request.files['image']
 
-    if not filename:
-        return jsonify({"status": 400, "error": True, "message": "Bad Request: 'filename' key is missing"}), 400
+    if file.filename == '':
+        return jsonify({"status": 400, "error": True, "message": "Bad Request: No file selected"}), 400
 
-    image_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        image_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(image_path)
 
-    if not os.path.exists(image_path):
-        return jsonify({"status": 404, "error": True, "message": f"File not found: {filename}"}), 404
+        try:
+            result = processor.process_image(image_path)
+            
+            status_code = result.get("status", 500)
+            
+            json_string = json.dumps(result, ensure_ascii=False, indent=4)
+            return Response(json_string, status=status_code, content_type='application/json; charset=utf-8')
 
-    try:
-        result = processor.process_image(image_path)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": 500, "error": True, "message": f"An internal server error occurred: {e}"}), 500
         
-        status_code = result.get("status", 500)
-        
-        json_string = json.dumps(result, ensure_ascii=False, indent=4)
-        return Response(json_string, status=status_code, content_type='application/json; charset=utf-8')
+        finally:
+            if os.path.exists(image_path):
+                os.remove(image_path)
+    else:
+        return jsonify({"status": 400, "error": True, "message": f"Bad Request: File type not allowed. Please use one of {list(ALLOWED_EXTENSIONS)}"}), 400
 
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"status": 500, "error": True, "message": f"An internal server error occurred: {e}"}), 500
 
 if __name__ == '__main__':
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)

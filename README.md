@@ -45,7 +45,7 @@ pip install -r requirements.txt
 ```
 document-ocr/
 │
-├── app.py                 # Flask web server
+├── app.py                 # Flask web server, handles file uploads
 ├── document_processor.py  # Main processor to identify doc type & route to correct extractor
 ├── ktp_extractor.py       # KTP-specific OCR and data formatting logic
 ├── sim_extractor.py       # SIM-specific OCR and data formatting logic
@@ -58,8 +58,8 @@ document-ocr/
 
 ## 🧠 How It Works
 
-1.  You upload a KTP or SIM image to the `uploads/` folder.
-2.  Send a JSON request containing the filename to the API.
+1.  A client sends a POST request to the API, attaching an image file (KTP or SIM) as **`multipart/form-data`**.
+2.  The Flask server receives the request, validates the file type, and saves the image temporarily to the **`uploads/`** folder.
 3.  The **`DocumentProcessor`** identifies whether the image is a KTP or a SIM.
 4.  It routes the OCR data to the appropriate extractor (`KTPExtractor` or `SIMExtractor`).
 5.  The extractor detects fields, cleans the text, and normalizes the values.
@@ -93,19 +93,17 @@ POST /ocr/document
 
 ### **Request Body**
 
-```json
-{
-    "filename": "your_image_name.jpg"
-}
-```
+-   **Type:** `form-data`
+-   **Key:** `image`
+-   **Value:** `[Your image file]` (e.g., `ktp.jpg`)
 
 ### **Example cURL**
 
 ```bash
 curl -X POST http://localhost:5000/ocr/document \
-     -H "Content-Type: application/json" \
-     -d '{"filename": "your_image_name.jpg"}'
+     -F "image=@/path/to/your_image.jpg"
 ```
+*Replace `/path/to/your_image.jpg` with the actual path to your image file.*
 
 ---
 
@@ -181,8 +179,8 @@ curl -X POST http://localhost:5000/ocr/document \
 | **`document_processor.py`** | Identifies the document type and orchestrates the extraction process.       |
 | **`ktp_extractor.py`**      | Contains the core logic for KTP data extraction and field matching.         |
 | **`sim_extractor.py`**      | Contains the core logic for SIM data extraction and field matching.         |
-| **`app.py`**                | The Flask API server that handles HTTP requests and responses.              |
-| **`uploads/`**              | Folder where images are stored for processing.                              |
+| **`app.py`**                | The Flask API server that handles file uploads and HTTP responses.          |
+| **`uploads/`**              | Temporary folder for images during processing. Files are auto-deleted.      |
 
 ---
 
@@ -196,14 +194,15 @@ You can modify the following in the extractor files (`ktp_extractor.py`, `sim_ex
 
 ---
 
-## 🧪 Troubleshooting
+## 🧪 Troubleshooting Guide
 
-| Issue                               | Possible Cause                      | Fix                                                          |
-| ----------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
-| `Warning: Could not read image`     | Wrong filename or path              | Check that the file exists in the `uploads/` folder.         |
-| `OCR returned no results`           | Low-quality or blurry image         | Use a clearer, higher-resolution photo.                      |
-| `Could not determine document type` | Image is not a KTP or SIM           | Ensure the uploaded image is a valid Indonesian KTP or SIM.  |
-| `paddlepaddle not found`            | OCR backend is missing              | Install with `pip install paddlepaddle`.                     |
+| **Issue**                                  | **Possible Cause**                                    | **Recommended Fix**                                                                     |
+| ------------------------------------------ | ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **`Bad Request: 'image' part is missing`** | The request did not include the `image` field.        | Send a `multipart/form-data` request and attach the file under the `image` key.         |
+| **`Bad Request: File type not allowed`**   | Unsupported or invalid file extension.                | Upload an image with an allowed format, such as **`.jpg`**, **`.jpeg`**, or **`.png`**.  |
+| **`OCR returned no results`**              | The image is too blurry, dark, or low-quality.        | Use a clearer, well-lit, and higher-resolution photo of the document.                |
+| **`Could not determine document type`**    | The uploaded image is not recognized as a KTP or SIM. | Upload a valid **Indonesian KTP** or **SIM** image.                   |
+| **`paddlepaddle not found`**               | The OCR backend dependency is missing.                | Install PaddlePaddle using: <br> `pip install paddlepaddle`            |
 
 ---
 
