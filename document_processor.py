@@ -18,19 +18,20 @@ def identify_document_type(ocr_texts):
 
 class DocumentProcessor:
     def __init__(self):
-        print("Initializing PaddleOCR engine...")
-        self.ocr = PaddleOCR(use_textline_orientation=True, lang='id')
-        print("Initializing document extractors...")
-        self.ktp_extractor = KTPExtractor()
-        self.sim_extractor = SIMExtractor()
-        print("Document processor is ready.")
+        pass
 
     def process_image(self, image_path):
+        print("Initializing PaddleOCR engine for new request...")
+        ocr = PaddleOCR(use_textline_orientation=True, lang='id')
+        ktp_extractor = KTPExtractor()
+        sim_extractor = SIMExtractor()
+        print("Engine ready for processing.")
+
         image = cv2.imread(image_path)
         if image is None:
             return {"status": 404, "error": True, "message": f"Could not read image at {image_path}"}
 
-        ocr_result = self.ocr.predict(image)
+        ocr_result = ocr.predict(image)
 
         if not ocr_result or not ocr_result[0] or not ocr_result[0]['rec_texts']:
             return {"status": 500, "error": True, "message": "OCR failed to detect any text."}
@@ -39,13 +40,13 @@ class DocumentProcessor:
         doc_type = identify_document_type(ocr_texts)
 
         if doc_type == "KTP":
-            ktp_data = self.ktp_extractor.process_ktp(ocr_result)
+            ktp_data = ktp_extractor.process_ktp(ocr_result)
             if not ktp_data:
                 return {"status": 500, "error": True, "message": "Failed to extract KTP data."}
             return format_to_target_json(ktp_data)
 
         elif doc_type == "SIM":
-            sim_data = self.sim_extractor.process_sim(ocr_result)
+            sim_data = sim_extractor.process_sim(ocr_result)
             if not sim_data:
                 return {"status": 500, "error": True, "message": "Failed to extract SIM data."}
             return format_sim_to_json(sim_data)
