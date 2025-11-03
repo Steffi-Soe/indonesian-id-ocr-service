@@ -5,6 +5,7 @@ import json
 from flask import Flask, request, jsonify, Response
 from werkzeug.utils import secure_filename
 from document_processor import DocumentProcessor
+import uuid
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
@@ -32,8 +33,10 @@ def process_document_image():
         return jsonify({"status": 400, "error": True, "message": "Bad Request: No file selected"}), 400
 
     if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        image_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        _, file_extension = os.path.splitext(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}{file_extension}"
+        image_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        
         file.save(image_path)
 
         try:
