@@ -12,9 +12,9 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['JSON_SORT_KEYS'] = False
 
-# print("Loading Document Processor...")
-# processor = DocumentProcessor()
-# print("Processor loaded. Flask server is ready.")
+print("Loading Document Processor...")
+processor = DocumentProcessor()
+print("Processor loaded. Flask server is ready.")
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -38,7 +38,6 @@ def process_document_image():
         file.save(image_path)
 
         try:
-            processor = DocumentProcessor()
             result = processor.process_image(image_path)
             
             status_code = result.get("status", 500)
@@ -60,8 +59,7 @@ def process_document_image():
 
 if __name__ == '__main__':
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    # app.run(host='0.0.0.0', port=5000, debug=True)
-
+    
     from waitress import serve
     print("Starting server with Waitress...")
     serve(app, host='0.0.0.0', port=5000, threads=4)
