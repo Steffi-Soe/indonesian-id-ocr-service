@@ -8,3 +8,4 @@ paddlex==3.3.5
 thefuzz==0.22.1
 Levenshtein==0.27.1
 Flask==3.1.2
+flask-cors==6.0.1

@@ -2,6 +2,7 @@ import os
 import json
 from flask import Flask, request, jsonify, Response
 from werkzeug.utils import secure_filename
+from flask_cors import CORS
 from document_processor import DocumentProcessor
 import uuid
 
@@ -9,6 +10,14 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'upload
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
 app = Flask(__name__)
+
+allowed_origins = [
+    "http://localhost:3000",
+    "https://guest.alvindocs.com"
+]
+
+CORS(app, origins=allowed_origins)
+
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['JSON_SORT_KEYS'] = False
 
