@@ -2,6 +2,11 @@
 
 # 🪪 Indonesian Document OCR API (KTP & SIM)
 
+![Python](https://img.shields.io/badge/Python-3.8+-blue)
+![Flask](https://img.shields.io/badge/Flask-API-green)
+![OCR](https://img.shields.io/badge/PaddleOCR-Enabled-orange)
+![Status](https://img.shields.io/badge/Status-Active-success)
+
 This project provides a **Flask-based REST API** for extracting structured data from Indonesian identity documents, including **ID Cards (KTP)** and **Driving Licenses (SIM)**, using **PaddleOCR**.
 
 It automatically identifies the document type, performs Optical Character Recognition (OCR), intelligently processes the text, and formats the results into a clean, standardized JSON structure.
