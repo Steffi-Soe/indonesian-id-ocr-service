@@ -124,18 +124,72 @@ POST /ocr/document
 curl -X POST http://localhost:5000/ocr/document \
      -F "image=@/path/to/your_image.jpg"
 ```
+*Replace `/path/to/your_image.jpg` with the actual path to your image file.*
 
 ---
 
-## ✅ Example Responses
+### **✅ Example Responses**
 
-### KTP Response
+#### **KTP Response**
 
-*(unchanged — omitted here for brevity)*
+```json
+{
+    "status": 200,
+    "error": false,
+    "message": "KTP OCR Processed Successfully",
+    "data": {
+        "document_type": "KTP",
+        "nomor": "3201123456789001",
+        "nama": "BUDI SANTOSO",
+        "tempat_lahir": "Bandung",
+        "tgl_lahir": "01-01-1990",
+        "jenis_kelamin": "LAKI-LAKI",
+        "agama": "ISLAM",
+        "status_perkawinan": "KAWIN",
+        "pekerjaan": "KARYAWAN SWASTA",
+        "kewarganegaraan": "WNI",
+        "alamat": {
+            "name": "Jl. Merdeka No. 10",
+            "rt_rw": "001/002",
+            "kel_desa": "Cihampelas",
+            "kecamatan": "Cimahi",
+            "kabupaten": "KABUPATEN BANDUNG",
+            "provinsi": "JAWA BARAT"
+        }
+    }
+}
+```
 
-### SIM Response
+#### **SIM Response**
 
-*(unchanged — omitted here for brevity)*
+```json
+{
+    "status": 200,
+    "error": false,
+    "message": "SIM OCR Processed Successfully",
+    "data": {
+        "document_type": "SIM",
+        "nomor": "1198-8017-000562",
+        "nama": "MUHAMMAD YUNUS",
+        "tempat_lahir": "JAKARTA",
+        "tgl_lahir": "08-10-1998",
+        "jenis_kelamin": "PRIA",
+        "agama": null,
+        "status_perkawinan": null,
+        "pekerjaan": "PELAJAR/MAHASISWA",
+        "kewarganegaraan": null,
+        "berlaku_sampai": "06-04-2028",
+        "alamat": {
+            "name": "JL.H.OYAR NO.24 PEGANGSAAN DUA",
+            "rt_rw": "002/002",
+            "kel_desa": null,
+            "kecamatan": "KELAPA GADING",
+            "kabupaten": "JAKARTA TIMUR",
+            "provinsi": "METRO JAYA"
+        }
+    }
+}
+```
 
 ---
 
