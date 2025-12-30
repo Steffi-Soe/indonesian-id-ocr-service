@@ -41,6 +41,7 @@ class DocumentProcessor:
 
         ts = int(time.time())
         corrected_image = self.preprocessor.preprocess(image)
+        
         ocr_result = self.ocr.predict(corrected_image)
         
         doc_type = "UNKNOWN"
@@ -50,6 +51,11 @@ class DocumentProcessor:
 
         if doc_type == "UNKNOWN":
             print("Preprocessing yielded UNKNOWN type. Attempting fallback to raw image.")
+            h, w = image.shape[:2]
+            if w > 1500:
+                scale = 1500 / w
+                image = cv2.resize(image, None, fx=scale, fy=scale)
+                
             ocr_result_raw = self.ocr.predict(image)
             if ocr_result_raw and ocr_result_raw[0] and ocr_result_raw[0].get("rec_texts"):
                 fallback_type = identify_document_type(ocr_result_raw[0]["rec_texts"])

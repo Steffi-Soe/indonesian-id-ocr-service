@@ -8,6 +8,9 @@ class ImagePreprocessor:
         self.TARGET_RATIO = 1.58
         self.MIN_AREA_RATIO = 0.05
         
+        self.PROCESSING_WIDTH = 1280 
+        self.OUTPUT_WIDTH = 1000
+        
         self.debug = debug
         self.debug_dir = debug_dir
         
@@ -17,8 +20,19 @@ class ImagePreprocessor:
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         self.face_cascade = cv2.CascadeClassifier(cascade_path)
 
+    def resize_keep_aspect(self, image, target_width):
+        h, w = image.shape[:2]
+        if w == target_width: return image
+        scale = target_width / w
+        return cv2.resize(image, None, fx=scale, fy=scale)
+
     def preprocess(self, image):
         self._save(image, "00_original")
+
+        h, w = image.shape[:2]
+        if w > self.PROCESSING_WIDTH:
+            image = self.resize_keep_aspect(image, self.PROCESSING_WIDTH)
+            self._save(image, "00_original_resized")
 
         oriented_image = self.correct_orientation_semantic(image)
         self._save(oriented_image, "01_orientation_fixed")
@@ -31,11 +45,11 @@ class ImagePreprocessor:
         deskewed = self.deskew_hough(warped)
         self._save(deskewed, "03_deskewed")
         
-        final_image = self.add_padding(deskewed)
+        final_normalized = self.resize_keep_aspect(deskewed, self.OUTPUT_WIDTH)
+
+        final_image = self.add_padding(final_normalized)
         self._save(final_image, "04_final_padded")
 
-        self._save_comparison(image, final_image)
-        
         return final_image
 
     def add_padding(self, image, pad_size=20):
@@ -233,13 +247,3 @@ class ImagePreprocessor:
         import time
         ts = int(time.time() * 1000)
         cv2.imwrite(os.path.join(self.debug_dir, f"{ts}_{name}.jpg"), img)
-
-    def _save_comparison(self, original, processed):
-        if not self.debug or original is None or processed is None: return
-        h = max(original.shape[0], processed.shape[0])
-        scale = h / processed.shape[0]
-        p_resized = cv2.resize(processed, None, fx=scale, fy=scale)
-        scale_o = h / original.shape[0]
-        o_resized = cv2.resize(original, None, fx=scale_o, fy=scale_o)
-        canvas = np.concatenate((o_resized, p_resized), axis=1)
-        self._save(canvas, "comparison")
