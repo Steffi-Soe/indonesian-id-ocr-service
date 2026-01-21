@@ -5,7 +5,6 @@ from paddleocr import PaddleOCR
 from ktp_extractor import KTPExtractor, format_to_target_json
 from sim_extractor import SIMExtractor, format_sim_to_json
 from image_preprocessor import ImagePreprocessor
-from debug_visualizer import DebugVisualizer
 
 def identify_document_type(ocr_texts):
     full_text = " ".join(ocr_texts).upper()
@@ -30,7 +29,6 @@ class DocumentProcessor:
             debug=self.debug,
             debug_dir=f"{self.debug_dir}/preprocess"
         )
-        self.visualizer = DebugVisualizer(output_dir=f"{self.debug_dir}/analysis")
 
         print("Engine ready.")
 
