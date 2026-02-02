@@ -1,5 +1,7 @@
 import os
 import json
+import shutil
+from datetime import datetime
 from flask import Flask, request, jsonify, Response
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
@@ -7,6 +9,7 @@ from document_processor import DocumentProcessor
 import uuid
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+LOGGING_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ocr_logs')
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
 app = Flask(__name__)
@@ -41,13 +44,27 @@ def process_document_image():
 
     if file and allowed_file(file.filename):
         _, file_extension = os.path.splitext(file.filename)
-        unique_filename = f"{uuid.uuid4().hex}{file_extension}"
+        request_id = uuid.uuid4().hex
+        unique_filename = f"{request_id}{file_extension}"
         image_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
         
         file.save(image_path)
 
         try:
             result = processor.process_image(image_path)
+            
+            current_month = datetime.now().strftime('%Y-%m')
+            month_dir = os.path.join(LOGGING_FOLDER, current_month)
+            os.makedirs(month_dir, exist_ok=True)
+
+            final_image_path = os.path.join(month_dir, unique_filename)
+            shutil.copy(image_path, final_image_path)
+
+            json_filename = f"{request_id}_pred.json"
+            json_path = os.path.join(month_dir, json_filename)
+            
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=4)
             
             status_code = result.get("status", 500)
             
@@ -68,6 +85,7 @@ def process_document_image():
 
 if __name__ == '__main__':
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    os.makedirs(LOGGING_FOLDER, exist_ok=True)
     
     from waitress import serve
     print("Starting server with Waitress...")
