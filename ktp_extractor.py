@@ -13,7 +13,9 @@ class KTPExtractor:
         ]
 
         self.truncated_key_map = {
-            # "DAMAT": "Alamat",
+            "RTIRW": "RT/RW",
+            "RTRW": "RT/RW",
+            "RT.RW": "RT/RW",
             "NIS KELAMIN": "Jenis Kelamin",
             "ENIS KELAMIN": "Jenis Kelamin",
             "EMPAT/TGL": "Tempat/Tgl Lahir",
@@ -22,21 +24,22 @@ class KTPExtractor:
             "KERJAAN": "Pekerjaan",
             "ATUS PERKAWINAN": "Status Perkawinan",
             "KAL/DESA": "Kel/Desa",
-            "KEL/DESA": "Kel/Desa"
+            "KEL/DESA": "Kel/Desa",
+            "NO KTP": "NIK"
         }
 
         self.known_values = {
             "Agama": [
                 "ISLAM", "KRISTEN", "KATOLIK", "HINDU", "BUDDHA", "KONGHUCU",
-                "CHRISTIAN", "CATHOLIC" # WNA support
+                "CHRISTIAN", "CATHOLIC"
             ],
             "Jenis Kelamin": [
                 "LAKI-LAKI", "PEREMPUAN", "LAKI", "PEREMPUAN",
-                "MALE", "FEMALE" # WNA support
+                "MALE", "FEMALE"
             ],
             "Status Perkawinan": [
                 "BELUM KAWIN", "KAWIN", "CERAI HIDUP", "CERAI MATI",
-                "MARRIED", "SINGLE", "DIVORCED" # WNA support
+                "MARRIED", "SINGLE", "DIVORCED"
             ],
             "Kewarganegaraan": ["WNI", "WNA"]
         }
@@ -97,11 +100,12 @@ class KTPExtractor:
         max_y = max(key_y_positions)
 
         active_height = max_y - min_y
-        cutoff_y = max_y + (active_height * 0.45)
+        cutoff_y_bottom = max_y + (active_height * 0.45)
+        cutoff_y_top = min_y - (active_height * 0.3)
 
         filtered = [
             item for item in recognized_data
-            if self._get_y_center(item) <= cutoff_y
+            if cutoff_y_top <= self._get_y_center(item) <= cutoff_y_bottom
         ]
         return filtered
 
@@ -109,7 +113,7 @@ class KTPExtractor:
         potential_keys = []
         potential_values = []
         trace_info = {}
-
+        
         for item in recognized_data:
             text_raw = item['text'].strip()
             text_upper = text_raw.upper()
@@ -143,6 +147,7 @@ class KTPExtractor:
                 potential_values.append(item)
 
         potential_keys.sort(key=self._get_y_center)
+        key_ids = {k['id'] for k in potential_keys}
         key_map = {k['canonical_field']: k for k in potential_keys}
 
         extracted_data = {}
@@ -171,14 +176,26 @@ class KTPExtractor:
                     }
                     continue
 
-            value_parts = re.split(r':\s*', key_item['text'], maxsplit=1)
-            if len(value_parts) > 1 and value_parts[1].strip():
-                val = value_parts[1].strip()
-                extracted_data[key_name] = val
+            key_part_match = process.extractOne(key_name, [key_item['text']], scorer=fuzz.partial_ratio)
+            
+            inline_candidate = ""
+            if key_part_match and key_part_match[1] > 70:
+                clean_key_text = key_item['text']
+                parts = re.split(r'[:]', clean_key_text, maxsplit=1)
+                if len(parts) > 1 and parts[1].strip():
+                    inline_candidate = parts[1].strip()
+                else:
+                    if len(clean_key_text) > len(key_name) + 2:
+                        potential_inline = clean_key_text[len(key_name):].strip()
+                        if re.match(r'^[:\-\.\s]*', potential_inline):
+                             inline_candidate = re.sub(r'^[:\-\.\s]*', '', potential_inline)
+
+            if inline_candidate and len(inline_candidate) > 2:
+                extracted_data[key_name] = inline_candidate
                 trace_info[key_name] = {
-                    "value": val,
+                    "value": inline_candidate,
                     "source_ids": [key_item['id']],
-                    "method": "inline_regex_split"
+                    "method": "inline_extraction"
                 }
                 continue
 
@@ -193,15 +210,15 @@ class KTPExtractor:
                     continue
 
                 val_y_center = self._get_y_center(val_item)
+                val_x_start = val_item['box'][0][0]
 
                 if (abs(val_y_center - key_y_center) < vertical_threshold and
-                        val_item['box'][0][0] > key_x_end):
+                        val_x_start > (key_x_end - 20)):
                     
-                    x_dist = val_item['box'][0][0] - key_x_end
+                    x_dist = val_x_start - key_x_end
                     y_diff = abs(val_y_center - key_y_center)
                     
                     score = x_dist + (y_diff * 15)
-                    
                     same_line_candidates.append((score, val_item))
 
             if same_line_candidates:
@@ -227,20 +244,28 @@ class KTPExtractor:
                         addr_line1_y = self._get_y_center(best_candidate)
                         
                         second_line_cands = []
-                        for val_item in potential_values:
-                            if val_item['id'] in claimed_value_ids:
-                                continue
-                            if val_item['id'] == best_candidate['id']:
-                                continue
+                        for val_item in recognized_data: 
+                            if val_item['id'] in claimed_value_ids: continue
+                            if val_item['id'] == best_candidate['id']: continue
+                            if val_item['id'] == key_item['id']: continue
 
                             val_y = self._get_y_center(val_item)
                             
                             is_below_addr = val_y > (addr_line1_y + 10)
                             is_above_rtrw = val_y < (rt_rw_y - 10)
-                            
                             is_close = (val_y - addr_line1_y) < 45
 
                             if is_below_addr and is_above_rtrw and is_close:
+                                txt_upper = val_item['text'].upper()
+                                if val_item['id'] in key_ids:
+                                    continue
+                                if re.search(r'\d{3}[/\s-]+\d{3}', val_item['text']):
+                                    continue
+                                if "RT" in txt_upper and "RW" in txt_upper: 
+                                    continue
+                                if "KEL/DESA" in txt_upper:
+                                    continue
+
                                 second_line_cands.append(val_item)
 
                         if second_line_cands:
@@ -264,12 +289,9 @@ class KTPExtractor:
             if key_name == "NIK" and key_name not in extracted_data:
                 below_candidates = []
                 for val_item in potential_values:
-                    if val_item['id'] in claimed_value_ids:
-                        continue
-                    
+                    if val_item['id'] in claimed_value_ids: continue
                     val_y_center = self._get_y_center(val_item)
                     y_diff = val_y_center - key_y_center
-                    
                     if 0 < y_diff < 50:
                         clean_val = val_item['text'].replace(" ", "").replace(":","")
                         if re.match(r'\d+', clean_val):
@@ -332,6 +354,22 @@ class KTPExtractor:
                         "method": "value_keyword_recovery"
                     }
                     break
+        
+        if "Tempat/Tgl Lahir" not in extracted:
+            for val_item in values:
+                if val_item['id'] in claimed_ids: continue
+                
+                txt = val_item['text']
+                if re.search(r'\d{2}[-\s/]\d{2}[-\s/]\d{4}', txt):
+                    if re.search(r'[A-Za-z]{3,}', txt):
+                        extracted["Tempat/Tgl Lahir"] = txt
+                        claimed_ids.add(val_item['id'])
+                        trace_info["Tempat/Tgl Lahir"] = {
+                            "value": txt,
+                            "source_ids": [val_item['id']],
+                            "method": "regex_date_place_recovery"
+                        }
+                        break
 
         if "Nama" not in extracted:
             nik_key = key_map.get("NIK")
@@ -405,10 +443,15 @@ class KTPExtractor:
             if clean_value.startswith(':'):
                 clean_value = clean_value[1:].strip()
 
-            if key not in ["Tempat/Tgl Lahir", "Berlaku Hingga"]:
-                clean_value = re.sub(
-                    r'\s+\d{2}-\d{2}-\d{4}$', '', clean_value
-                ).strip()
+            if key == "Agama":
+                match, score = process.extractOne(clean_value.upper(), self.known_values['Agama'])
+                if score > 70:
+                    clean_value = match
+            
+            if key == "RT/RW":
+                nums = re.findall(r'\d+', clean_value)
+                if len(nums) >= 2:
+                    clean_value = f"{nums[0]}/{nums[1]}"
 
             if key == "Jenis Kelamin":
                 val_upper = clean_value.upper()
@@ -459,11 +502,12 @@ def format_to_target_json(data):
     raw_ttl = data.get("Tempat/Tgl Lahir", "")
 
     if raw_ttl:
-        match = re.search(r'(.*?)[,.\s]+(\d{2}-\d{2}-\d{4})', raw_ttl)
+        match = re.search(r'^(?P<place>.*?)\s*(?P<date>\d{2}[-\s/]+\d{2}[-\s/]+\d{4})$', raw_ttl)
 
         if match:
-            tempat_lahir = match.group(1).strip().strip(":.,")
-            tgl_lahir = match.group(2).strip()
+            tempat_lahir = match.group('place').strip().strip(":.,")
+            tgl_lahir = match.group('date').strip().replace(' ', '-')
+            tgl_lahir = re.sub(r'[\s/]+', '-', tgl_lahir)
         else:
             parts = raw_ttl.split(',', 1)
             tempat_lahir = parts[0].strip().strip(":.,")

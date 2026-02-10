@@ -39,3 +39,14 @@ build/
 
 # PaddleOCR cache
 __paddle__/
+
+# Personal debugging and tools
+ktp guestbook/
+ocr_logs/
+debug_output/
+debug_sim_image.py
+debug_sim.py
+debug_ktp.py
+evaluate_kpi.py
+generate_excel_report.py
+labeling_tool.py
