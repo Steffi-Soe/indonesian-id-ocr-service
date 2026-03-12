@@ -1,0 +1,21 @@
+services:
+  ocr-service:
+    build: .
+    image: indonesian-id-ocr:latest
+    container_name: ocr-service
+    ports:
+      - "5000:5000"
+    volumes:
+      - ocr_uploads:/app/uploads
+      - ocr_models:/root/.paddlex
+    restart: unless-stopped
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  ocr_uploads:
+  ocr_models:
