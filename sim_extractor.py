@@ -7,10 +7,15 @@ class GeometryUtils:
     @staticmethod
     def cluster_into_rows(
         data_list: List[Dict],
-        y_threshold: int = 20
+        y_threshold: Optional[int] = None
     ) -> List[List[Dict]]:
         if not data_list:
             return []
+
+        if y_threshold is None:
+            heights = [abs(item['box'][3][1] - item['box'][0][1]) for item in data_list]
+            median_h = sorted(heights)[len(heights)//2] if heights else 20
+            y_threshold = max(10, int(median_h * 0.5))
 
         sorted_data = sorted(data_list, key=lambda x: x['y_center'])
         rows = []
@@ -37,17 +42,14 @@ class GeometryUtils:
 class FuzzyMatcher:
     ANCHORS = {
         'NAMA': ['Nama', 'Name', 'NamaName'],
-        'TTL': ['Tempat', 'Tgl', 'Lahir', 'Birth', 'Place', 'Date'],
-        'GOL_DARAH': ['Gol', 'Darah', 'Blood', 'Type', 'Daah'],
-        'JK': ['Jenis', 'Kelamin', 'Sex', 'Ketamin', 'Gender'],
-        'ALAMAT': ['Alamat', 'Address', 'Alamrrat', 'Jalan', 'Jl.'],
-        'PEKERJAAN': [
-            'Pekerjaan', 'Occupation', 'eerjaan', 'Kerja', 'Wiraswasta',
-            'Karyawan', 'Pelajar', 'Mahasiswa', 'PNS', 'Buruh', 'Mengurus'
-        ],
+        'TTL': ['Tempat', 'Lahir', 'Birth', 'Place', 'Date'], 
+        'GOL_DARAH': ['Darah', 'Blood', 'Type'], 
+        'JK': ['Jenis', 'Kelamin', 'Sex', 'Gender'],
+        'ALAMAT': ['Alamat', 'Address', 'Alamrrat'], 
+        'PEKERJAAN': ['Pekerjaan', 'Occupation', 'eerjaan'], 
         'PENERBIT': [
             'Diterbitkan', 'Issued', 'Oleh', 'Dierbtkan',
-            'SATPAS', 'POLRES', 'POLDA'
+            'SATPAS', 'POLRES', 'POLDA', 'KORLANTAS', 'METRO JAYA', 'METROJAYA'
         ],
     }
 
@@ -58,11 +60,11 @@ class FuzzyMatcher:
     ]
 
     @staticmethod
-    def identify_field(text: str, threshold: float = 0.55) -> Optional[str]:
+    def identify_field(text: str, threshold: float = 0.65) -> Optional[str]:
         if not text:
             return None
         clean_text = re.sub(r'[^a-zA-Z]', '', text).lower()
-        if len(clean_text) < 3:
+        if len(clean_text) < 4:
             return None
 
         best_ratio = 0.0
@@ -71,9 +73,14 @@ class FuzzyMatcher:
         for key, variants in FuzzyMatcher.ANCHORS.items():
             for var in variants:
                 clean_var = re.sub(r'[^a-zA-Z]', '', var).lower()
+                if len(clean_var) < 3: 
+                    continue
+                
                 ratio = difflib.SequenceMatcher(None, clean_text, clean_var).ratio()
-                if clean_var in clean_text:
-                    ratio = max(ratio, 0.85)
+                
+                if clean_var in clean_text and len(clean_var) >= 4:
+                    ratio = max(ratio, 0.90)
+                    
                 if ratio > best_ratio:
                     best_ratio = ratio
                     best_key = key
@@ -93,18 +100,12 @@ class FuzzyMatcher:
 
 
 class BaseSIMStrategy:
-    GARBAGE_FRAGMENTS = [
-        "SURAT", "IZIN", "MENGEMUDI", "DRIVING", "LICENSE",
-        "INDONESIA", "POLRI", "KEPOLISIAN",
-        "PASSENGER", "PERSONAL", "GOODS", "MOBIL", "PENUMPANG", "PRIBADI",
-        "ANGONNA", "MOTOR", "VEHICLE", "PLACE", "DATE", "BIRTH", "BLOOD",
-        "TYPE", "SAY", "DIERBTKAN", "ISSUED", "ANGKUTAN", "BARANG", "UMUM"
-    ]
-
     def cleanup_common(self, data: Dict[str, Any]) -> Dict[str, Any]:
         if data.get('Nama'):
             data['Nama'] = re.sub(r'^[\d\.\:\s]+', '', data['Nama']).strip()
-            data['Nama'] = re.sub(r'[^A-Z\s\.\']', '', data['Nama'].upper())
+            data['Nama'] = re.sub(r'[^A-Z\s\.\']', '', data['Nama'].upper()).strip()
+            if not data['Nama']:
+                data['Nama'] = None
 
         jk_raw = data.get('Jenis Kelamin', '') or data.get('Gol. Darah - Kelamin', '')
         if jk_raw:
@@ -122,69 +123,121 @@ class BaseSIMStrategy:
         if not text: return True
         text_upper = text.upper()
         if len(text) < 2: return True
-        for g in self.GARBAGE_FRAGMENTS:
-            if g in text_upper:
-                if any(x in text_upper for x in ["MOBIL", "PASSENGER", "PRIBADI", "GOODS", "DRIVING", "LICENSE", "SURAT IZIN"]):
-                    return True
+        
+        if "MOTOR" in text_upper and "CC" in text_upper: return True
+        if "SEPEDA" in text_upper and "MOTOR" in text_upper: return True
+        if "MOBIL" in text_upper and "PENUMPANG" in text_upper: return True
+        if "PASSENGER" in text_upper and "GOODS" in text_upper: return True
+        if "PLACE" in text_upper and "BIRTH" in text_upper: return True
+        if "BLOOD" in text_upper and "TYPE" in text_upper: return True
+        
+        if any(x in text_upper for x in [
+            "<= 250", "250 CC", "TRUK/BUS", "DRIVING LICENSE", 
+            "SURAT IZIN", "MENGEMUDI", "DITERBITKAN"
+        ]):
+            return True
+            
+        if text_upper.strip() in ["INDONESIA", "SURAT", "IZIN", "MENGEMUDI", "DRIVING", "LICENSE"]:
+            return True
+            
         return False
 
 
 class LegacySIMStrategy(BaseSIMStrategy):
     def extract(self, texts: List[str], all_data_with_boxes: List[Dict]) -> Dict[str, Any]:
         extracted_data = {}
-        rows = GeometryUtils.cluster_into_rows(all_data_with_boxes, y_threshold=20)
+        rows = GeometryUtils.cluster_into_rows(all_data_with_boxes)
+        row_texts = [" ".join([x['text'] for x in row]).strip() for row in rows]
+        
         current_section = 0
         address_accumulator = []
 
-        for row in rows:
-            row_text = " ".join([x['text'] for x in row]).strip()
+        for idx, row_text in enumerate(row_texts):
             if not row_text: continue
 
+            # Expiry
+            expiry_match = re.search(r'\b(\d{2}-\d{2}-20\d{2})\b', row_text)
+            if expiry_match:
+                dob = extracted_data.get('Tempat & Tgl. Lahir', '')
+                if expiry_match.group(1) not in dob:
+                    extracted_data['Berlaku Sampai'] = expiry_match.group(1)
+                    row_text = row_text.replace(expiry_match.group(1), "").strip()
+
+            if not row_text: continue
+
+            # Penerbit
+            if any(p in row_text.upper() for p in ['POLDA', 'POLRES', 'SATPAS', 'METROJAYA', 'METRO JAYA', 'KORLANTAS']):
+                extracted_data['Penerbit'] = row_text
+                continue
+
+            # SIM Num
+            if 'Nomor SIM' not in extracted_data:
+                sim_match = re.search(r'(\d{4}-\d{4}-\d{5,6})', row_text)
+                if sim_match:
+                    extracted_data['Nomor SIM'] = sim_match.group(1)
+                else:
+                    clean_num = row_text.replace("-", "").replace(" ", "")
+                    sim_match_2 = re.search(r'(\d{12,16})', clean_num)
+                    if sim_match_2:
+                        extracted_data['Nomor SIM'] = sim_match_2.group(1)
+
+            # Sections
             section_match = re.search(r'\b([1-6])\.', row_text)
             if section_match:
-                try:
-                    current_section = int(section_match.group(1))
-                    clean_val = re.sub(rf'{current_section}\.\s*', '', row_text).strip()
-                except ValueError:
-                    clean_val = row_text
+                current_section = int(section_match.group(1))
+                clean_val = re.sub(rf'{current_section}\.\s*', '', row_text).strip()
             else:
-                if (current_section == 4 and FuzzyMatcher.is_job(row_text) and not self.is_garbage(row_text)):
+                clean_val = row_text
+                
+                if current_section == 0 and 'Nomor SIM' in extracted_data and not self.is_garbage(clean_val):
+                    if not re.search(r'\d', clean_val) and len(clean_val) > 2:
+                        current_section = 1
+                if current_section < 2 and re.search(r'\b\d{2}-\d{2}-(19|20)\d{2}\b', clean_val):
+                    if clean_val != extracted_data.get('Berlaku Sampai'):
+                        current_section = 2
+                if current_section < 3 and re.search(r'\b(PRIA|WANITA|LAKI|PEREMPUAN)\b', clean_val.upper()):
+                    current_section = 3
+                if current_section < 4 and re.search(r'\b(RT|RW|JL|JALAN|GG|GANG|KP)\b', clean_val.upper()):
+                    current_section = 4
+                if current_section < 5 and FuzzyMatcher.is_job(clean_val):
                     current_section = 5
-                    clean_val = row_text
-                else:
-                    clean_val = row_text
 
-            if current_section == 1 and clean_val and len(clean_val) > 2:
-                extracted_data['Nama'] = clean_val
-            elif current_section == 2 and clean_val:
-                extracted_data['Tempat & Tgl. Lahir'] = clean_val
-            elif current_section == 3 and clean_val:
+            if not clean_val or self.is_garbage(clean_val):
+                continue
+
+            if current_section == 1 and len(clean_val) > 2:
+                clean_name = re.sub(r'\d+', '', clean_val).strip()
+                if clean_name:
+                    if 'Nama' not in extracted_data:
+                        extracted_data['Nama'] = clean_name
+                    else:
+                        extracted_data['Nama'] += ' ' + clean_name
+            elif current_section == 2:
+                if 'Tempat & Tgl. Lahir' not in extracted_data:
+                    extracted_data['Tempat & Tgl. Lahir'] = clean_val
+                else:
+                    extracted_data['Tempat & Tgl. Lahir'] += ' ' + clean_val
+            elif current_section == 3:
                 match_jk = re.search(r'([ABO]+)\s*[-]*\s*(PRIA|WANITA|LAKI|PEREMPUAN)', clean_val.upper())
                 if match_jk:
                     extracted_data['Gol. Darah'] = match_jk.group(1)
                     extracted_data['Jenis Kelamin'] = match_jk.group(2)
                 else:
                     extracted_data['Gol. Darah - Kelamin'] = clean_val
-            elif current_section == 4 and clean_val:
+            elif current_section == 4:
                 if clean_val.replace('.', '').strip() == str(current_section): continue
-                if not self.is_garbage(clean_val):
-                    address_accumulator.append(clean_val)
-            elif current_section == 5 and clean_val:
+                address_accumulator.append(clean_val)
+            elif current_section == 5:
                 if clean_val.replace('.', '').strip() == str(current_section): continue
-                extracted_data['Pekerjaan'] = clean_val
-            elif current_section == 6 and clean_val:
-                extracted_data['Provinsi'] = clean_val
-
-            sim_match = re.search(r'\d{4}-\d{4}-\d{6}', row_text)
-            if sim_match: extracted_data['Nomor SIM'] = sim_match.group(0)
-            expiry_match = re.search(r'\b(\d{2}-\d{2}-20\d{2})\b', row_text)
-            if expiry_match:
-                dob = extracted_data.get('Tempat & Tgl. Lahir', '')
-                if expiry_match.group(0) not in dob:
-                    extracted_data['Berlaku Sampai'] = expiry_match.group(0)
+                if 'Pekerjaan' not in extracted_data:
+                    extracted_data['Pekerjaan'] = clean_val
+            elif current_section == 6:
+                if 'Provinsi' not in extracted_data:
+                    extracted_data['Provinsi'] = clean_val
 
         if address_accumulator:
             extracted_data['raw_address_lines'] = address_accumulator
+
         return extracted_data
 
 
@@ -196,8 +249,27 @@ class SmartSIMStrategy(BaseSIMStrategy):
 
         for t in row_texts:
             clean = t.replace(" ", "").replace("-", "")
-            if re.match(r'^\d{12,16}$', clean):
-                extracted_data['Nomor SIM'] = clean
+            match = re.search(r'(\d{12,16})', clean)
+            if match:
+                extracted_data['Nomor SIM'] = match.group(1)
+                break
+
+        full_blob = " ".join(texts)
+        dates = re.findall(r'\b(\d{2})[\s\.-]*(\d{2})[\s\.-]*(20\d{2})\b', full_blob)
+        valid_expiry = None
+        if dates:
+            for d, m, y in dates:
+                try:
+                    if int(y) > 2018: valid_expiry = f"{d}-{m}-{y}"
+                except ValueError: continue
+        if valid_expiry: 
+            extracted_data['Berlaku Sampai'] = valid_expiry
+
+        for t in row_texts:
+            if any(p in t.upper() for p in ['POLDA', 'POLRES', 'SATPAS', 'METROJAYA', 'METRO JAYA', 'KORLANTAS']):
+                clean_penerbit = re.sub(r'\b\d{2}-\d{2}-20\d{2}\b', '', t).strip()
+                if clean_penerbit:
+                    extracted_data['Penerbit'] = clean_penerbit
                 break
 
         tagged_rows = []
@@ -207,16 +279,28 @@ class SmartSIMStrategy(BaseSIMStrategy):
 
         nama_idx = self._find_anchor_index(tagged_rows, 'NAMA')
         if nama_idx is not None:
-            extracted_data['Nama'] = self._find_value_forward(
-                tagged_rows, nama_idx + 1, 2, ['TTL', 'ALAMAT']
-            )
+            val = self._find_value_forward(tagged_rows, nama_idx + 1, 2, ['TTL', 'ALAMAT'])
+            if val and not re.search(r'\d', val):
+                extracted_data['Nama'] = val
+        else:
+            if 'Nomor SIM' in extracted_data:
+                sim_row_idx = next((i for i, text in enumerate(row_texts) if extracted_data['Nomor SIM'] in text.replace("-", "").replace(" ", "")), -1)
+                if sim_row_idx != -1:
+                    val = self._find_value_forward(tagged_rows, sim_row_idx + 1, 3, ['TTL', 'ALAMAT'])
+                    if val and not re.search(r'\d', val):
+                        extracted_data['Nama'] = val
 
         ttl_idx = self._find_anchor_index(tagged_rows, 'TTL')
         if ttl_idx is not None:
-            ttl_raw = self._find_value_forward(
-                tagged_rows, ttl_idx + 1, 5, ['GOL_DARAH', 'JK', 'ALAMAT']
-            )
-            if ttl_raw: self._parse_ttl(ttl_raw, extracted_data)
+            ttl_raw = self._find_value_forward(tagged_rows, ttl_idx + 1, 5, ['GOL_DARAH', 'JK', 'ALAMAT'])
+            if ttl_raw: 
+                self._parse_ttl(ttl_raw, extracted_data)
+        else:
+            for text in row_texts:
+                if re.search(r'\b\d{2}-\d{2}-(19|20)\d{2}\b', text):
+                    if text != extracted_data.get('Berlaku Sampai'):
+                        self._parse_ttl(text, extracted_data)
+                        break
 
         gd_idx = self._find_anchor_index(tagged_rows, 'GOL_DARAH')
         jk_idx = self._find_anchor_index(tagged_rows, 'JK')
@@ -232,7 +316,6 @@ class SmartSIMStrategy(BaseSIMStrategy):
                 clean_row = row.replace("-", "").strip().upper()
                 if clean_row in ['A', 'B', 'AB', 'O'] and 'Gol. Darah' not in extracted_data:
                     extracted_data['Gol. Darah'] = clean_row
-                    continue
                 if 'PRIA' in row.upper() or 'LAKI' in row.upper():
                     extracted_data['Jenis Kelamin'] = 'LAKI-LAKI'
                 elif 'WANITA' in row.upper() or 'PEREMPUAN' in row.upper():
@@ -240,9 +323,9 @@ class SmartSIMStrategy(BaseSIMStrategy):
 
         pekerjaan_idx = self._find_anchor_index(tagged_rows, 'PEKERJAAN')
         if pekerjaan_idx is not None:
-            extracted_data['Pekerjaan'] = self._find_value_forward(
-                tagged_rows, pekerjaan_idx + 1, 3, ['PENERBIT']
-            )
+            val = self._find_value_forward(tagged_rows, pekerjaan_idx + 1, 3, ['PENERBIT'])
+            if val and not re.search(r'\b\d{2}-\d{2}-20\d{2}\b', val):
+                extracted_data['Pekerjaan'] = val
 
         alamat_idx = self._find_anchor_index(tagged_rows, 'ALAMAT')
         if alamat_idx is not None:
@@ -259,21 +342,11 @@ class SmartSIMStrategy(BaseSIMStrategy):
             for i in range(start, stop_idx):
                 row = row_texts[i]
                 if FuzzyMatcher.identify_field(row) in ['PEKERJAAN', 'PENERBIT']: break
-                if "SATPAS" in row.upper() or "POLRES" in row.upper() or "POLDA" in row.upper(): continue
+                if any(p in row.upper() for p in ["SATPAS", "POLRES", "POLDA", "KORLANTAS", "METRO JAYA"]): continue
+                if re.search(r'\b\d{2}-\d{2}-20\d{2}\b', row): continue
                 if not self.is_garbage(row):
                     addr_lines.append(row)
             extracted_data['raw_address_lines'] = addr_lines
-
-        if 'Berlaku Sampai' not in extracted_data:
-            full_blob = " ".join(texts)
-            dates = re.findall(r'(\d{2})[\s\.-]*(\d{2})[\s\.-]*(20\d{2})', full_blob)
-            valid_expiry = None
-            if dates:
-                for d, m, y in dates:
-                    try:
-                        if int(y) > 2018: valid_expiry = f"{d}-{m}-{y}"
-                    except ValueError: continue
-            if valid_expiry: extracted_data['Berlaku Sampai'] = valid_expiry
 
         return extracted_data
 
@@ -295,18 +368,28 @@ class SmartSIMStrategy(BaseSIMStrategy):
     def _parse_ttl(self, text, data):
         if not text: return
         text = text.strip()
-        if ',' in text:
-            parts = text.split(',', 1)
-            data['Tempat Lahir'] = parts[0].strip()
-            if len(parts) > 1: data['Tanggal Lahir'] = parts[1].strip()
-            return
-        date_match = re.search(r'(\d{1,2})[-\s]?(\d{1,2})[-\s]?(19\d{2}|20\d{2})$', text)
+        
+        date_match = re.search(r'(\d{1,2})[\s\./]*(\d{1,2})[\s\./]*(19\d{2}|20\d{2})', text)
+        
         if date_match:
             d, m, y = date_match.groups()
-            data['Tempat Lahir'] = text[:date_match.start()].strip()
-            data['Tanggal Lahir'] = f"{d}-{m}-{y}"
+            data['Tanggal Lahir'] = f"{d.zfill(2)}-{m.zfill(2)}-{y}"
+            
+            if ',' in text:
+                data['Tempat Lahir'] = text.split(',', 1)[0].strip()
+            else:
+                data['Tempat Lahir'] = text[:date_match.start()].strip()
         else:
-            data['Tempat Lahir'] = text
+            if ',' in text:
+                parts = text.split(',', 1)
+                data['Tempat Lahir'] = parts[0].strip()
+                if len(parts) > 1: data['Tanggal Lahir'] = parts[1].strip()
+            else:
+                data['Tempat Lahir'] = text
+                
+        # Clean trailing artifacts
+        if data.get('Tempat Lahir'):
+            data['Tempat Lahir'] = re.sub(r'[,.\s]+$', '', data['Tempat Lahir']).strip()
 
 
 class SIMExtractor:
@@ -320,12 +403,17 @@ class SIMExtractor:
             'CILEGON', 'CIMAHI', 'SUKABUMI', 'BATAM', 'KUPANG', 'PONOROGO',
             'MALANG', 'SOLO', 'SURAKARTA', 'YOGYAKARTA', 'PALEMBANG',
             'PEKANBARU', 'PADANG', 'LAMPUNG', 'JAMBI', 'BENGKULU', 'ACEH',
-            'MATARAM', 'JAYAPURA', 'MANADO', 'AMBON', 'KENDARI', 'PALU'
+            'MATARAM', 'JAYAPURA', 'MANADO', 'AMBON', 'KENDARI', 'PALU',
+            'LEBAK', 'PANDEGLANG', 'CIANJUR', 'GARUT', 'TASIKMALAYA', 'CIAMIS', 
+            'KUNINGAN', 'CIREBON', 'MAJALENGKA', 'SUMEDANG', 'INDRAMAYU', 
+            'SUBANG', 'PURWAKARTA', 'KARAWANG'
         }
 
     def detect_version(self, texts: List[str]) -> str:
         full_text = " ".join(texts)
-        if re.search(r'1\.\s', full_text) or re.search(r'2\.\s', full_text):
+        if re.search(r'\b[1-3]\.\s+(Nama|Tempat|Alamat|Pekerjaan)', full_text, re.IGNORECASE):
+            return "LEGACY"
+        if re.search(r'\b1\.\s', full_text) and re.search(r'\b2\.\s', full_text):
             return "LEGACY"
         return "SMART"
 
@@ -386,8 +474,6 @@ class SIMExtractor:
             if is_city:
                 if not addr['kabupaten']:
                     addr['kabupaten'] = clean_lines[idx]
-                else:
-                    pass
                 city_index = idx
 
         street_parts = []
@@ -456,7 +542,6 @@ class SIMExtractor:
                     elif not addr['kecamatan']:
                         addr['kecamatan'] = residue
                 continue
-
             
             if is_kel_prefix:
                 val = re.sub(r'\b(KEL|DESA|DS)\b\.?', '', line, flags=re.IGNORECASE).strip()
@@ -492,13 +577,29 @@ class SIMExtractor:
     def post_process_common(self, extracted_data: Dict[str, Any]) -> Dict[str, Any]:
         if 'Tempat & Tgl. Lahir' in extracted_data:
             val = extracted_data['Tempat & Tgl. Lahir']
-            if ',' in val:
-                parts = val.split(',', 1)
-                extracted_data['Tempat Lahir'] = parts[0].strip()
-                if len(parts) > 1: extracted_data['Tanggal Lahir'] = parts[1].strip()
+            
+            date_match = re.search(r'(\d{1,2})[\s\./]*(\d{1,2})[\s\./]*(19\d{2}|20\d{2})', val)
+            if date_match:
+                d, m, y = date_match.groups()
+                extracted_data['Tanggal Lahir'] = f"{d.zfill(2)}-{m.zfill(2)}-{y}"
+                if ',' in val:
+                    extracted_data['Tempat Lahir'] = val.split(',', 1)[0].strip()
+                else:
+                    extracted_data['Tempat Lahir'] = val[:date_match.start()].strip()
             else:
-                extracted_data['Tempat Lahir'] = val
+                if ',' in val:
+                    parts = val.split(',', 1)
+                    extracted_data['Tempat Lahir'] = parts[0].strip()
+                    if len(parts) > 1: extracted_data['Tanggal Lahir'] = parts[1].strip()
+                else:
+                    extracted_data['Tempat Lahir'] = val
             del extracted_data['Tempat & Tgl. Lahir']
+
+        if 'Tanggal Lahir' in extracted_data and extracted_data['Tanggal Lahir']:
+            date_match = re.search(r'(\d{1,2})[\s\./]*(\d{1,2})[\s\./]*(19\d{2}|20\d{2})', extracted_data['Tanggal Lahir'])
+            if date_match:
+                d, m, y = date_match.groups()
+                extracted_data['Tanggal Lahir'] = f"{d.zfill(2)}-{m.zfill(2)}-{y}"
 
         if 'raw_address_lines' in extracted_data:
             parsed = self._parse_address_block(extracted_data['raw_address_lines'])
@@ -511,6 +612,7 @@ class SIMExtractor:
             }
             if 'Provinsi' in extracted_data:
                 extracted_data['alamat']['provinsi'] = extracted_data['Provinsi']
+                
         return extracted_data
 
 

@@ -1,124 +1,754 @@
+# debug_sim.py
+"""
+Detailed SIM extraction debug tool.
+Shows raw OCR rows, field tagging, value extraction steps, address parsing, and final data.
+Usage: 
+  Batch mode: python debug_sim.py "./sim case"
+  Single mode: python debug_sim.py "path/to/sim.jpg"
+"""
+import sys
+import os
 import cv2
 import numpy as np
-import os
-import json
-import logging
+import re
+import difflib
+from pprint import pprint
 from paddleocr import PaddleOCR
-from sim_extractor import SIMExtractor, format_sim_to_json
-from image_preprocessor import SmartSIMPreprocessor, StandardPreprocessor
-
-IMAGE_PATH = "sim case/sim cam 4.jpeg"
-OUTPUT_DIR = "debug_output_sim"
-MODE = "SMART"  # Options: "RAW", "STD", "SMART"
-
-logging.getLogger("ppocr").setLevel(logging.ERROR)
 
 
-class DebugVisualizer:
-    def __init__(self, output_dir):
-        self.output_dir = output_dir
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+class GeometryUtils:
+    @staticmethod
+    def cluster_into_rows(data_list, y_threshold=20):
+        if not data_list:
+            return []
+        sorted_data = sorted(data_list, key=lambda x: x['y_center'])
+        rows = []
+        current_row = [sorted_data[0]]
+        for item in sorted_data[1:]:
+            avg_y = sum(i['y_center'] for i in current_row) / len(current_row)
+            if abs(item['y_center'] - avg_y) < y_threshold:
+                current_row.append(item)
+            else:
+                current_row.sort(key=lambda x: x['box'][0][0])
+                rows.append(current_row)
+                current_row = [item]
+        if current_row:
+            current_row.sort(key=lambda x: x['box'][0][0])
+            rows.append(current_row)
+        return rows
 
-    def draw_ocr_boxes(self, image, ocr_result, filename_prefix="debug"):
-        vis_image = image.copy()
 
-        if not ocr_result or not ocr_result[0]:
-            print("[ERROR] No text detected.")
+class FuzzyMatcher:
+    ANCHORS = {
+        'NAMA': ['Nama', 'Name', 'NamaName'],
+        'TTL': ['Tempat', 'Lahir', 'Birth', 'Place', 'Date'], 
+        'GOL_DARAH': ['Darah', 'Blood', 'Type'], 
+        'JK': ['Jenis', 'Kelamin', 'Sex', 'Gender'],
+        'ALAMAT': ['Alamat', 'Address', 'Alamrrat'], 
+        'PEKERJAAN': ['Pekerjaan', 'Occupation', 'eerjaan'], 
+        'PENERBIT': [
+            'Diterbitkan', 'Issued', 'Oleh', 'Dierbtkan',
+            'SATPAS', 'POLRES', 'POLDA', 'KORLANTAS', 'METRO JAYA', 'METROJAYA'
+        ],
+    }
+
+    JOB_KEYWORDS = [
+        'WIRASWASTA', 'PELAJAR', 'MAHASISWA', 'KARYAWAN', 'BURUH',
+        'PEGAWAI', 'PNS', 'POLRI', 'TNI', 'MENGURUS', 'DOKTER', 'BIDAN',
+        'SWASTA', 'GURU', 'DOSEN', 'PEDAGANG', 'NELAYAN', 'PETANI'
+    ]
+
+    @staticmethod
+    def identify_field(text, threshold=0.65):
+        if not text: return None
+        clean_text = re.sub(r'[^a-zA-Z]', '', text).lower()
+        if len(clean_text) < 4: return None
+        
+        best_ratio = 0.0
+        best_key = None
+        for key, variants in FuzzyMatcher.ANCHORS.items():
+            for var in variants:
+                clean_var = re.sub(r'[^a-zA-Z]', '', var).lower()
+                if len(clean_var) < 3: continue
+                
+                ratio = difflib.SequenceMatcher(None, clean_text, clean_var).ratio()
+                
+                if clean_var in clean_text and len(clean_var) >= 4:
+                    ratio = max(ratio, 0.90)
+                    
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_key = key
+                    
+        if best_ratio >= threshold:
+            return best_key
+        return None
+
+    @staticmethod
+    def is_job(text):
+        text_upper = text.upper()
+        if any(job in text_upper for job in FuzzyMatcher.JOB_KEYWORDS): return True
+        if "KARY" in text_upper and "SWASTA" in text_upper: return True
+        return False
+
+
+class BaseSIMStrategy:
+    GARBAGE_FRAGMENTS = [
+        "SURAT", "IZIN", "MENGEMUDI", "DRIVING", "LICENSE",
+        "INDONESIA", "POLRI", "KEPOLISIAN",
+        "PASSENGER", "PERSONAL", "GOODS", "MOBIL", "PENUMPANG", "PRIBADI",
+        "ANGONNA", "MOTOR", "VEHICLE", "PLACE", "DATE", "BIRTH", "BLOOD",
+        "TYPE", "SAY", "DIERBTKAN", "ISSUED", "ANGKUTAN", "BARANG", "UMUM"
+    ]
+
+    def is_garbage(self, text):
+        if not text: return True
+        text_upper = text.upper()
+        if len(text) < 2: return True
+        for g in self.GARBAGE_FRAGMENTS:
+            if g in text_upper:
+                if any(x in text_upper for x in ["MOBIL", "PASSENGER", "PRIBADI", "GOODS", "DRIVING", "LICENSE", "SURAT IZIN"]):
+                    return True
+        return False
+
+
+class LegacySIMStrategy(BaseSIMStrategy):
+    def extract(self, texts, all_data_with_boxes):
+        extracted_data = {}
+        rows = GeometryUtils.cluster_into_rows(all_data_with_boxes, y_threshold=20)
+        row_texts = [" ".join([x['text'] for x in row]).strip() for row in rows]
+        print_clusters(rows)
+
+        print("\nDetected SIM version: LEGACY")
+        current_section = 0
+        address_accumulator = []
+
+        for idx, row_text in enumerate(row_texts):
+            if not row_text: continue
+            print(f"\nEvaluating Row {idx}: '{row_text}'")
+
+            expiry_match = re.search(r'\b(\d{2}-\d{2}-20\d{2})\b', row_text)
+            if expiry_match:
+                dob = extracted_data.get('Tempat & Tgl. Lahir', '')
+                if expiry_match.group(1) not in dob:
+                    extracted_data['Berlaku Sampai'] = expiry_match.group(1)
+                    row_text = row_text.replace(expiry_match.group(1), "").strip()
+                    print(f"  -> Extracted Berlaku Sampai explicitly: {expiry_match.group(1)}")
+
+            if not row_text:
+                continue
+
+            # Extract Penerbit
+            if any(p in row_text.upper() for p in ['POLDA', 'POLRES', 'SATPAS', 'METROJAYA', 'METRO JAYA', 'KORLANTAS']):
+                extracted_data['Penerbit'] = row_text
+                print(f"  -> Extracted Penerbit: {row_text}")
+                continue
+
+            # Extract SIM Number explicitly
+            if 'Nomor SIM' not in extracted_data:
+                sim_match = re.search(r'(\d{4}-\d{4}-\d{5,6})', row_text)
+                if sim_match:
+                    extracted_data['Nomor SIM'] = sim_match.group(1)
+                    print(f"  -> Extracted Nomor SIM (format 1): {sim_match.group(1)}")
+                else:
+                    clean_num = row_text.replace("-", "").replace(" ", "")
+                    sim_match_2 = re.search(r'(\d{12,16})', clean_num)
+                    if sim_match_2:
+                        extracted_data['Nomor SIM'] = sim_match_2.group(1)
+                        print(f"  -> Extracted Nomor SIM (format 2): {sim_match_2.group(1)}")
+
+            # Section identification
+            section_match = re.search(r'\b([1-6])\.', row_text)
+            if section_match:
+                current_section = int(section_match.group(1))
+                clean_val = re.sub(rf'{current_section}\.\s*', '', row_text).strip()
+                print(f"  -> Section {current_section} detected explicitly. clean_val='{clean_val}'")
+            else:
+                clean_val = row_text
+                
+                # Heuristic Implicit Section Advancement (In case OCR missed the "1." or "2.")
+                if current_section == 0 and 'Nomor SIM' in extracted_data and not self.is_garbage(clean_val):
+                    if not re.search(r'\d', clean_val) and len(clean_val) > 2:
+                        current_section = 1
+                        print(f"  -> Section 1 inferred (post-SIM string) -> '{clean_val}'")
+                if current_section < 2 and re.search(r'\b\d{2}-\d{2}-(19|20)\d{2}\b', clean_val):
+                    if clean_val != extracted_data.get('Berlaku Sampai'):
+                        current_section = 2
+                        print(f"  -> Section 2 inferred (Date string) -> '{clean_val}'")
+                if current_section < 3 and re.search(r'\b(PRIA|WANITA|LAKI|PEREMPUAN)\b', clean_val.upper()):
+                    current_section = 3
+                    print(f"  -> Section 3 inferred (Gender string) -> '{clean_val}'")
+                if current_section < 4 and re.search(r'\b(RT|RW|JL|JALAN|GG|GANG|KP)\b', clean_val.upper()):
+                    current_section = 4
+                    print(f"  -> Section 4 inferred (Address keyword) -> '{clean_val}'")
+                if current_section < 5 and FuzzyMatcher.is_job(clean_val):
+                    current_section = 5
+                    print(f"  -> Section 5 inferred (job keyword) -> '{clean_val}'")
+
+            if not clean_val or self.is_garbage(clean_val):
+                print(f"  -> Skipped as garbage or empty.")
+                continue
+
+            if current_section == 1 and len(clean_val) > 2:
+                clean_name = re.sub(r'\d+', '', clean_val).strip()
+                if clean_name:
+                    if 'Nama' not in extracted_data:
+                        extracted_data['Nama'] = clean_name
+                        print(f"  -> Nama assigned: {clean_name}")
+                    else:
+                        extracted_data['Nama'] += ' ' + clean_name
+                        print(f"  -> Nama appended: {clean_name}")
+            elif current_section == 2:
+                if 'Tempat & Tgl. Lahir' not in extracted_data:
+                    extracted_data['Tempat & Tgl. Lahir'] = clean_val
+                    print(f"  -> TTL assigned: {clean_val}")
+                else:
+                    extracted_data['Tempat & Tgl. Lahir'] += ' ' + clean_val
+                    print(f"  -> TTL appended: {clean_val}")
+            elif current_section == 3:
+                match_jk = re.search(r'([ABO]+)\s*[-]*\s*(PRIA|WANITA|LAKI|PEREMPUAN)', clean_val.upper())
+                if match_jk:
+                    extracted_data['Gol. Darah'] = match_jk.group(1)
+                    extracted_data['Jenis Kelamin'] = match_jk.group(2)
+                    print(f"  -> Gol. Darah & JK assigned: {match_jk.group(1)} / {match_jk.group(2)}")
+                else:
+                    extracted_data['Gol. Darah - Kelamin'] = clean_val
+            elif current_section == 4:
+                if clean_val.replace('.', '').strip() == str(current_section): continue
+                address_accumulator.append(clean_val)
+                print(f"  -> Added to address accumulator.")
+            elif current_section == 5:
+                if clean_val.replace('.', '').strip() == str(current_section): continue
+                if 'Pekerjaan' not in extracted_data:
+                    extracted_data['Pekerjaan'] = clean_val
+                    print(f"  -> Pekerjaan assigned: {clean_val}")
+            elif current_section == 6:
+                if 'Provinsi' not in extracted_data:
+                    extracted_data['Provinsi'] = clean_val
+                    print(f"  -> Provinsi assigned: {clean_val}")
+
+        if address_accumulator:
+            extracted_data['raw_address_lines'] = address_accumulator
+
+        # Post-process legacy TTL
+        if 'Tempat & Tgl. Lahir' in extracted_data:
+            val = extracted_data['Tempat & Tgl. Lahir']
+            if ',' in val:
+                parts = val.split(',', 1)
+                extracted_data['Tempat Lahir'] = parts[0].strip()
+                extracted_data['Tanggal Lahir'] = parts[1].strip()
+            else:
+                date_match = re.search(r'\b(\d{2}-\d{2}-\d{4})\b', val)
+                if date_match:
+                    extracted_data['Tanggal Lahir'] = date_match.group(1)
+                    extracted_data['Tempat Lahir'] = val.replace(date_match.group(1), '').strip()
+                else:
+                    extracted_data['Tempat Lahir'] = val
+            del extracted_data['Tempat & Tgl. Lahir']
+            print(f"  -> Parsed legacy TTL: Tempat '{extracted_data.get('Tempat Lahir')}', Tgl '{extracted_data.get('Tanggal Lahir')}'")
+
+        return extracted_data
+
+
+class SmartSIMStrategy(BaseSIMStrategy):
+    def extract(self, texts, all_data_with_boxes):
+        extracted_data = {}
+        rows = GeometryUtils.cluster_into_rows(all_data_with_boxes)
+        row_texts = [" ".join([x['text'] for x in row]).strip() for row in rows]
+        print_clusters(rows)
+
+        # 1. Nomor SIM
+        for t in row_texts:
+            clean = t.replace(" ", "").replace("-", "")
+            match = re.search(r'(\d{12,16})', clean)
+            if match:
+                extracted_data['Nomor SIM'] = match.group(1)
+                print(f"\nFound Nomor SIM: {match.group(1)}")
+                break
+
+        # 2. Expiry date 
+        full_blob = " ".join(texts)
+        dates = re.findall(r'\b(\d{2})[\s\.-]*(\d{2})[\s\.-]*(20\d{2})\b', full_blob)
+        valid_expiry = None
+        if dates:
+            for d, m, y in dates:
+                try:
+                    if int(y) > 2018: valid_expiry = f"{d}-{m}-{y}"
+                except ValueError: continue
+        if valid_expiry:
+            extracted_data['Berlaku Sampai'] = valid_expiry
+            print(f"Found Expiry Date explicitly: {valid_expiry}")
+
+        # 3. Penerbit
+        for t in row_texts:
+            if any(p in t.upper() for p in ['POLDA', 'POLRES', 'SATPAS', 'METROJAYA', 'METRO JAYA', 'KORLANTAS']):
+                clean_penerbit = re.sub(r'\b\d{2}-\d{2}-20\d{2}\b', '', t).strip()
+                if clean_penerbit:
+                    extracted_data['Penerbit'] = clean_penerbit
+                    print(f"Found Penerbit explicitly: {clean_penerbit}")
+                break
+
+        tagged_rows = []
+        for idx, text in enumerate(row_texts):
+            ftype = FuzzyMatcher.identify_field(text)
+            tagged_rows.append({'type': ftype, 'text': text, 'index': idx})
+        print_tagged_rows(tagged_rows)
+
+        # Nama
+        nama_idx = self._find_anchor_index(tagged_rows, 'NAMA')
+        if nama_idx is not None:
+            val = self._find_value_forward_logged(tagged_rows, nama_idx + 1, 2, ['TTL', 'ALAMAT'])
+            if val and not re.search(r'\d', val):
+                extracted_data['Nama'] = val
+                print(f"Nama extracted: '{val}'")
+            else:
+                print(f"Nama rejected (contains digits): '{val}'")
+        else:
+            print("NAMA anchor NOT FOUND.")
+            if 'Nomor SIM' in extracted_data:
+                sim_row_idx = next((i for i, text in enumerate(row_texts) if extracted_data['Nomor SIM'] in text.replace("-", "").replace(" ", "")), -1)
+                if sim_row_idx != -1 and sim_row_idx + 1 < len(row_texts):
+                    val = row_texts[sim_row_idx + 1]
+                    if not self.is_garbage(val) and not re.search(r'\d', val):
+                        extracted_data['Nama'] = val
+                        print(f"Nama fallback extracted: '{val}'")
+
+        # TTL
+        ttl_idx = self._find_anchor_index(tagged_rows, 'TTL')
+        if ttl_idx is not None:
+            ttl_raw = self._find_value_forward_logged(tagged_rows, ttl_idx + 1, 5, ['GOL_DARAH', 'JK', 'ALAMAT'])
+            if ttl_raw:
+                self._parse_ttl_logged(ttl_raw, extracted_data)
+        else:
+            print("TTL anchor NOT FOUND.")
+            for i, text in enumerate(row_texts):
+                if re.search(r'\b\d{2}-\d{2}-(19|20)\d{2}\b', text):
+                    if text != extracted_data.get('Berlaku Sampai'):
+                        print(f"TTL fallback found: '{text}'")
+                        self._parse_ttl_logged(text, extracted_data)
+                        break
+
+        # Gol Darah / Jenis Kelamin
+        gd_idx = self._find_anchor_index(tagged_rows, 'GOL_DARAH')
+        jk_idx = self._find_anchor_index(tagged_rows, 'JK')
+        search_start = max(gd_idx or -1, jk_idx or -1) + 1
+        if search_start > 0:
+            limit = min(search_start + 4, len(row_texts))
+            for i in range(search_start, limit):
+                row = row_texts[i]
+                if self.is_garbage(row): continue
+                if FuzzyMatcher.identify_field(row) == 'ALAMAT': break
+                clean_row = row.replace("-", "").strip().upper()
+                if clean_row in ['A', 'B', 'AB', 'O'] and 'Gol. Darah' not in extracted_data:
+                    extracted_data['Gol. Darah'] = clean_row
+                    print(f"Gol. Darah found: {clean_row}")
+                if 'PRIA' in row.upper() or 'LAKI' in row.upper():
+                    extracted_data['Jenis Kelamin'] = 'LAKI-LAKI'
+                    print("Jenis Kelamin: LAKI-LAKI")
+                elif 'WANITA' in row.upper() or 'PEREMPUAN' in row.upper():
+                    extracted_data['Jenis Kelamin'] = 'PEREMPUAN'
+                    print("Jenis Kelamin: PEREMPUAN")
+
+        # Pekerjaan
+        pekerjaan_idx = self._find_anchor_index(tagged_rows, 'PEKERJAAN')
+        if pekerjaan_idx is not None:
+            val = self._find_value_forward_logged(tagged_rows, pekerjaan_idx + 1, 3, ['PENERBIT'])
+            if val and not re.search(r'\b\d{2}-\d{2}-20\d{2}\b', val):
+                extracted_data['Pekerjaan'] = val
+                print(f"Pekerjaan extracted: '{val}'")
+            else:
+                print(f"Pekerjaan rejected (looks like a date): '{val}'")
+        else:
+            print("PEKERJAAN anchor NOT FOUND.")
+
+        # Alamat
+        alamat_idx = self._find_anchor_index(tagged_rows, 'ALAMAT')
+        if alamat_idx is not None:
+            start = alamat_idx + 1
+            stop_idx = pekerjaan_idx if pekerjaan_idx else len(row_texts)
+            if stop_idx == len(row_texts):
+                 for k in range(start, len(row_texts)):
+                     if FuzzyMatcher.is_job(row_texts[k]):
+                         stop_idx = k
+                         break
+            
+            addr_lines = []
+            for i in range(start, stop_idx):
+                row = row_texts[i]
+                if FuzzyMatcher.identify_field(row) in ['PEKERJAAN', 'PENERBIT']: break
+                if any(p in row.upper() for p in ["SATPAS", "POLRES", "POLDA", "KORLANTAS", "METRO JAYA"]): continue
+                if re.search(r'\b\d{2}-\d{2}-20\d{2}\b', row): continue
+                if not self.is_garbage(row):
+                    addr_lines.append(row)
+            extracted_data['raw_address_lines'] = addr_lines
+            print(f"Address lines collected: {addr_lines}")
+        else:
+            print("ALAMAT anchor NOT FOUND.")
+
+        return extracted_data
+
+    def _find_anchor_index(self, tagged_rows, atype):
+        for row in tagged_rows:
+            if row['type'] == atype:
+                return row['index']
+        return None
+
+    def _find_value_forward_logged(self, tagged_rows, start_idx, max_lookahead, stop_types=None):
+        limit = min(start_idx + max_lookahead, len(tagged_rows))
+        for i in range(start_idx, limit):
+            row = tagged_rows[i]
+            if stop_types and row['type'] in stop_types:
+                print(f"  Value search stopped by anchor {row['type']} at row {i}")
+                return None
+            if self.is_garbage(row['text']):
+                continue
+            if len(row['text']) < 3 and not re.search(r'\d', row['text']):
+                continue
+            print(f"  Value found at row {i}: '{row['text']}'")
+            return row['text']
+        return None
+
+    def _parse_ttl_logged(self, text, data):
+        if not text: return
+        text = text.strip()
+        if ',' in text:
+            parts = text.split(',', 1)
+            data['Tempat Lahir'] = parts[0].strip()
+            if len(parts) > 1: data['Tanggal Lahir'] = parts[1].strip()
+            print(f"TTL parsed (comma): tempat='{data['Tempat Lahir']}', tgl='{data.get('Tanggal Lahir')}'")
             return
-
-        data = ocr_result[0]
-        boxes = data.get('dt_polys', [])
-        texts = data.get('rec_texts', [])
-
-        print(f"\n--- RAW OCR DATA ({len(texts)} items) ---")
-        print(f"{'ID':<4} | {'Y-Center':<8} | {'Text'}")
-        print("-" * 50)
-
-        for i, (box, text) in enumerate(zip(boxes, texts)):
-            box = np.array(box).astype(np.int32)
-            y_center = int((box[0][1] + box[2][1]) / 2)
-
-            cv2.polylines(vis_image, [box], True, (0, 255, 0), 2)
-
-            label = f"[{i}] {text}"
-            origin = (box[0][0], box[0][1] - 10)
-
-            (w, h), _ = cv2.getTextSize(
-                label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
-            )
-            cv2.rectangle(
-                vis_image,
-                (origin[0], origin[1] - h),
-                (origin[0] + w, origin[1]),
-                (0, 0, 0),
-                -1
-            )
-            cv2.putText(
-                vis_image, label, origin,
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
-            )
-            print(f"{i:<4} | {y_center:<8} | {text}")
-
-        output_path = os.path.join(
-            self.output_dir, f"{filename_prefix}_visualized.jpg"
-        )
-        cv2.imwrite(output_path, vis_image)
-        print(f"\n[INFO] Visualized image saved to: {output_path}")
+        date_match = re.search(r'(\d{1,2})[-\s]?(\d{1,2})[-\s]?(19\d{2}|20\d{2})', text)
+        if date_match:
+            d, m, y = date_match.groups()
+            data['Tempat Lahir'] = text[:date_match.start()].strip()
+            data['Tanggal Lahir'] = f"{d}-{m}-{y}"
+            print(f"TTL parsed (regex): tempat='{data['Tempat Lahir']}', tgl='{data['Tanggal Lahir']}'")
+        else:
+            data['Tempat Lahir'] = text
+            print(f"TTL (no date found): tempat='{text}'")
 
 
-def run_debug(image_path):
-    print(f"Loading Image: {image_path}")
-    if not os.path.exists(image_path):
-        print("[ERROR] Image file does not exist.")
-        return
+def _parse_address_block_logged(address_lines):
+    print("\n--- ADDRESS PARSER DEBUG ---")
+    print(f"Incoming raw lines: {address_lines}")
+    
+    cities = {
+        'JAKARTA', 'BOGOR', 'DEPOK', 'TANGERANG', 'BEKASI', 'BANDUNG',
+        'SEMARANG', 'SURABAYA', 'MEDAN', 'MAKASSAR', 'BALIKPAPAN',
+        'DENPASAR', 'SLEMAN', 'BANTUL', 'KULON PROGO', 'SERANG',
+        'CILEGON', 'CIMAHI', 'SUKABUMI', 'BATAM', 'KUPANG', 'PONOROGO',
+        'MALANG', 'SOLO', 'SURAKARTA', 'YOGYAKARTA', 'PALEMBANG',
+        'PEKANBARU', 'PADANG', 'LAMPUNG', 'JAMBI', 'BENGKULU', 'ACEH',
+        'MATARAM', 'JAYAPURA', 'MANADO', 'AMBON', 'KENDARI', 'PALU'
+    }
 
-    raw_image = cv2.imread(image_path)
-    if raw_image is None:
-        print("[ERROR] Failed to read image using cv2.")
-        return
+    addr = {
+        "name": None, "rt_rw": None, "kel_desa": None,
+        "kecamatan": None, "kabupaten": None, "provinsi": None
+    }
+    if not address_lines:
+        print("No address lines to parse.")
+        return addr
 
-    processed_image = raw_image
+    clean_lines = []
+    for line in address_lines:
+        line = re.sub(r'^(Alamat|Address)[\s\:\.]*', '', line, flags=re.IGNORECASE).strip()
+        line = re.sub(r'^[4]\.\s*', '', line).strip()
+        if not line: continue
+        if FuzzyMatcher.is_job(line): continue
+        clean_lines.append(line)
+        
+    print(f"Cleaned lines for parsing: {clean_lines}")
 
-    if MODE == "SMART":
-        print("Using SmartSIMPreprocessor...")
-        pre = SmartSIMPreprocessor(debug=True, debug_dir=OUTPUT_DIR)
-        processed_image = pre.preprocess(raw_image)
-    elif MODE == "STD":
-        print("Using StandardPreprocessor...")
-        pre = StandardPreprocessor(debug=True, debug_dir=OUTPUT_DIR)
-        processed_image = pre.preprocess(raw_image)
+    if not clean_lines: return addr
+
+    city_index = len(clean_lines) 
+    for idx in range(len(clean_lines) - 1, -1, -1):
+        line_u = clean_lines[idx].upper()
+        is_city = any(c in line_u for c in cities)
+        if 'KOTA' in line_u or 'KAB' in line_u or 'JAKARTA' in line_u: is_city = True
+        
+        if is_city:
+            if not addr['kabupaten']:
+                addr['kabupaten'] = clean_lines[idx]
+                print(f"[City Logic] Detected Kabupaten: '{clean_lines[idx]}' at line {idx}")
+            city_index = idx
+
+    street_parts = []
+    state = 0 # 0=Street mode, 1=Kel/Kec mode
+    
+    rt_pivot_re = re.compile(r'(?:RT|RW|R\.T|R\.W)[\s\.\:]*(\d{1,4})', re.IGNORECASE)
+    rt_sep_re = re.compile(r'^[\s\/\-\|lI1]+(\d{1,4})', re.IGNORECASE)
+    rw_residue_re = re.compile(r'^\s*(?:RW|RW\.|W\.|RW:)[\s\.\:]*(\d{1,4})', re.IGNORECASE)
+    street_prefixes = ('JL', 'JALAN', 'GG', 'GANG', 'KP', 'KMP', 'KOMP', 'DUSUN', 'DSN', 'BLK', 'BLOK', 'NO')
+
+    for idx, line in enumerate(clean_lines):
+        if idx >= city_index: 
+            print(f"-> Stopping at index {idx} (Reached City/Kabupaten bounds)")
+            break
+            
+        line_u = line.upper()
+        print(f"\nProcessing line {idx}: '{line}' (Current state: {state})")
+        
+        if 'KEC' in line_u and 'KECIL' not in line_u:
+            val = re.sub(r'\b(KEC|KECAMATAN)\b\.?', '', line, flags=re.IGNORECASE).strip()
+            addr['kecamatan'] = val
+            state = 1
+            print(f"-> Regex match 'KEC'. Set Kecamatan='{val}'. Set state=1")
+            continue
+
+        is_kel_prefix = False
+        for p in ['KEL', 'DESA', 'DS']:
+             if re.match(rf'^{p}\b', line_u) or re.match(rf'^{p}\.', line_u):
+                 is_kel_prefix = True
+                 break
+        
+        rt_match = rt_pivot_re.search(line)
+        if rt_match:
+            state = 1
+            start, end = rt_match.span()
+            prefix = line[:start].strip()
+            match_val = rt_match.group(1)
+            residue = line[end:]
+            print(f"-> Regex match 'RT/RW'. Found RT='{match_val}'. Prefix='{prefix}'. Residue='{residue}'")
+            
+            sep_match = rt_sep_re.match(residue)
+            rw_val = None
+            
+            if sep_match:
+                rw_val = sep_match.group(1)
+                residue = residue[sep_match.end():]
+                print(f"  -> Found separator. RW='{rw_val}'")
+            else:
+                rw_match = rw_residue_re.search(residue)
+                if rw_match:
+                    rw_val = rw_match.group(1)
+                    residue = residue[rw_match.end():]
+                    print(f"  -> Found explicit RW tag. RW='{rw_val}'")
+            
+            if rw_val:
+                addr['rt_rw'] = f"{match_val}/{rw_val}"
+            else:
+                addr['rt_rw'] = match_val
+                
+            print(f"  -> Assigned RT/RW='{addr['rt_rw']}'")
+            
+            if is_kel_prefix:
+                cleaned_prefix = re.sub(r'\b(KEL|DESA|DS)\b\.?', '', prefix, flags=re.IGNORECASE).strip()
+                addr['kel_desa'] = cleaned_prefix
+                print(f"  -> Assigned Kel/Desa from prefix='{cleaned_prefix}'")
+            elif prefix:
+                street_parts.append(prefix)
+                print(f"  -> Appended '{prefix}' to street parts")
+            
+            residue = residue.strip()
+            if len(residue) > 2:
+                residue = re.sub(r'^[\-\,\.]+', '', residue).strip()
+                if not addr['kel_desa']:
+                    addr['kel_desa'] = residue
+                    print(f"  -> Assigned Kel/Desa from residue='{residue}'")
+                elif not addr['kecamatan']:
+                    addr['kecamatan'] = residue
+                    print(f"  -> Assigned Kecamatan from residue='{residue}'")
+            continue
+
+        if is_kel_prefix:
+            val = re.sub(r'\b(KEL|DESA|DS)\b\.?', '', line, flags=re.IGNORECASE).strip()
+            addr['kel_desa'] = val
+            state = 1
+            print(f"-> Regex match 'KEL/DESA'. Set Kel/Desa='{val}'. Set state=1")
+            continue
+        
+        if state == 0:
+            starts_with_street = any(line_u.startswith(p) for p in street_prefixes)
+            if ',' in line and not starts_with_street:
+                parts = line.split(',', 1)
+                p1 = parts[0].strip()
+                p2 = parts[1].strip()
+                if not addr['kel_desa']: addr['kel_desa'] = p1
+                if not addr['kecamatan']: addr['kecamatan'] = p2
+                state = 1
+                print(f"-> State 0: Found comma. Split to Kel/Desa='{p1}', Kecamatan='{p2}'. Set state=1")
+            else:
+                street_parts.append(line)
+                print(f"-> State 0: Appended to street parts: '{line}'")
+        else:
+            if not addr['kel_desa']:
+                addr['kel_desa'] = line
+                print(f"-> State 1: Assigned Kel/Desa='{line}'")
+            elif not addr['kecamatan']:
+                addr['kecamatan'] = line
+                print(f"-> State 1: Assigned Kecamatan='{line}'")
+            else:
+                addr['kecamatan'] += " " + line
+                print(f"-> State 1: Appended to Kecamatan: '{line}'")
+
+    if street_parts:
+        addr['name'] = " ".join(street_parts)
+        print(f"\nFinal combined Street Name: '{addr['name']}'")
+
+    print(f"--- END ADDRESS PARSER DEBUG ---\n")
+    return addr
+
+def print_clusters(rows):
+    print("\n=== ROW CLUSTERS ===")
+    for i, row in enumerate(rows):
+        y_avg = np.mean([item['y_center'] for item in row])
+        row_text = " | ".join([f"{item['text']} ({item['confidence']:.2f})" for item in row])
+        print(f"Row {i} (Y ~ {y_avg:.1f}): [{row_text}]")
+
+def print_tagged_rows(tagged_rows):
+    print("\n=== TAGGED ROWS (SMART) ===")
+    for tr in tagged_rows:
+        print(f"Row {tr['index']}: type={tr['type']}, text='{tr['text']}'")
+
+
+def process_image(img_path, ocr_engine):
+    print(f"\n" + "="*80)
+    print(f"🚀 DEBUGGING IMAGE: {img_path}")
+    print("="*80)
+
+    image = cv2.imread(img_path)
+    if image is None:
+        print(f"Error: Cannot read image at '{img_path}'")
+        return {"status": "ERROR", "missing": ["Image load failed"]}
+
+    result = ocr_engine.predict(image)
+    if not result or not result[0]:
+        print("OCR returned no results.")
+        return {"status": "ERROR", "missing": ["No OCR result"]}
+
+    data = result[0]
+    boxes = data.get('dt_polys', [])
+    texts = data.get('rec_texts', [])
+    scores = data.get('rec_scores', [])
+
+    if not texts:
+        print("No text blocks detected.")
+        return {"status": "ERROR", "missing": ["No text detected"]}
+
+    all_data = []
+    for i, (box, text) in enumerate(zip(boxes, texts)):
+        try:
+            np_box = np.array(box, dtype=np.int32)
+            if np_box.shape != (4, 2): continue
+            confidence = scores[i] if i < len(scores) else 0.0
+            all_data.append({
+                'id': i,
+                'box': np_box,
+                'text': str(text),
+                'y_center': (np_box[0][1] + np_box[2][1]) / 2,
+                'confidence': confidence
+            })
+        except Exception as e:
+            print(f"Warning: could not process box {i}: {e}")
+
+    print(f"\nTotal text blocks (filtered): {len(all_data)}")
+    for item in all_data:
+        print(f"  [{item['id']}] '{item['text']}' (conf={item['confidence']:.2f}, y_center={item['y_center']:.1f})")
+
+    full_text = " ".join(texts)
+    
+    if re.search(r'\b[1-6]\.\s', full_text) or re.search(r'\b[1-6]\.', full_text):
+        version = "LEGACY"
     else:
-        print("Using RAW Image...")
+        version = "SMART"
+    print(f"\nDetected SIM version: {version}")
 
-    cv2.imwrite(os.path.join(OUTPUT_DIR, "ocr_input.jpg"), processed_image)
+    if version == "SMART":
+        strategy = SmartSIMStrategy()
+    else:
+        strategy = LegacySIMStrategy()
 
-    print("Initializing OCR Engine...")
+    extracted = strategy.extract(texts, all_data)
+    
+    if 'raw_address_lines' in extracted:
+        parsed_addr = _parse_address_block_logged(extracted['raw_address_lines'])
+        extracted['alamat'] = parsed_addr
+        del extracted['raw_address_lines']
+
+    jk_raw = extracted.get('Jenis Kelamin', '') or extracted.get('Gol. Darah - Kelamin', '')
+    if jk_raw:
+        jk_upper = str(jk_raw).upper()
+        if 'PRIA' in jk_upper or 'LAKI' in jk_upper:
+            extracted['Jenis Kelamin'] = 'LAKI-LAKI'
+        elif 'WANITA' in jk_upper or 'PEREMPUAN' in jk_upper:
+            extracted['Jenis Kelamin'] = 'PEREMPUAN'
+    if 'Gol. Darah - Kelamin' in extracted:
+        del extracted['Gol. Darah - Kelamin']
+        
+    if 'Tanggal Lahir' in extracted:
+         match = re.search(r'(\d{2}-\d{2}-\d{4})', extracted['Tanggal Lahir'])
+         if match: extracted['Tanggal Lahir'] = match.group(1)
+
+    print("\n=== FINAL EXTRACTED DATA ===")
+    pprint(extracted)
+
+    critical = ['Nama', 'Nomor SIM', 'Tempat Lahir', 'Tanggal Lahir', 'alamat', 'Pekerjaan', 'Berlaku Sampai']
+    missing = []
+    for field in critical:
+        if not extracted.get(field):
+            missing.append(field)
+            
+    if missing:
+        print(f"\n⚠️  MISSING FIELDS: {', '.join(missing)}")
+        return {"status": "MISSING", "missing": missing}
+    else:
+        print("\n✅ All critical fields extracted.")
+        return {"status": "SUCCESS", "missing": []}
+
+
+if __name__ == "__main__":
+    target_path = "./sim case"
+    if len(sys.argv) > 1:
+        target_path = sys.argv[1]
+
+    if not os.path.exists(target_path):
+        print(f"Error: Path '{target_path}' not found.")
+        sys.exit(1)
+
+    image_files = []
+    VALID_EXTS = {'.jpg', '.jpeg', '.png', '.bmp'}
+    
+    if os.path.isfile(target_path):
+        image_files = [target_path]
+    elif os.path.isdir(target_path):
+        for f in sorted(os.listdir(target_path)):
+            if os.path.splitext(f)[1].lower() in VALID_EXTS:
+                image_files.append(os.path.join(target_path, f))
+                
+    if not image_files:
+        print(f"No valid images found in '{target_path}'. (Supported: {VALID_EXTS})")
+        sys.exit(0)
+
+    print("Initializing PaddleOCR (Only Once)...")
     ocr = PaddleOCR(
         use_textline_orientation=True,
         lang='id',
         enable_mkldnn=True
     )
+    
+    print(f"\nFound {len(image_files)} image(s). Starting batch processing...")
+    
+    summary = {}
+    for img_path in image_files:
+        result = process_image(img_path, ocr)
+        summary[os.path.basename(img_path)] = result
 
-    print("Running OCR...")
-    result = ocr.predict(processed_image)
-
-    if not result or not result[0]:
-        print("[ERROR] PaddleOCR returned no results.")
-        return
-
-    viz = DebugVisualizer(OUTPUT_DIR)
-    viz.draw_ocr_boxes(processed_image, result, filename_prefix="sim_debug")
-
-    print("\n--- RUNNING EXTRACTOR ---")
-    extractor = SIMExtractor()
-
-    raw_data = extractor.process_sim(result)
-    json_output = format_sim_to_json(raw_data)
-
-    print("\n--- FINAL JSON OUTPUT ---")
-    print(json.dumps(json_output, indent=4))
-
-
-if __name__ == "__main__":
-    run_debug(IMAGE_PATH)
+    print("\n\n" + "="*80)
+    print("📊 BATCH PROCESSING SUMMARY REPORT")
+    print("="*80)
+    
+    success_count = sum(1 for v in summary.values() if v['status'] == "SUCCESS")
+    print(f"Total Processed: {len(image_files)}")
+    print(f"Perfect Extractions: {success_count} / {len(image_files)}\n")
+    
+    for filename, result in summary.items():
+        if result['status'] == "SUCCESS":
+            print(f"✅ {filename}: SUCCESS")
+        elif result['status'] == "MISSING":
+            print(f"⚠️  {filename}: MISSING -> {', '.join(result['missing'])}")
+        else:
+            print(f"❌ {filename}: ERROR -> {', '.join(result['missing'])}")
+            
+    print("="*80 + "\n")
