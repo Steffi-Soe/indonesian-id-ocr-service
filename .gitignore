@@ -44,6 +44,8 @@ __paddle__/
 ktp guestbook/
 ocr_logs/
 debug_output/
+kpi report/
+real sim case/
 debug_sim_image.py
 debug_sim.py
 debug_ktp.py
