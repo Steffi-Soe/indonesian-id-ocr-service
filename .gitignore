@@ -49,6 +49,9 @@ real sim case/
 debug_sim_image.py
 debug_sim.py
 debug_ktp.py
+debug_extraction.py
 evaluate_kpi.py
 generate_excel_report.py
 labeling_tool.py
+adaptive_preprocessor.py
+deskew_validator.py

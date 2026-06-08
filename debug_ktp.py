@@ -7,7 +7,7 @@ from paddleocr import PaddleOCR
 from ktp_extractor import KTPExtractor, format_to_target_json
 from image_preprocessor import StandardPreprocessor
 
-IMAGE_PATH = "ktp guestbook/FEB'26/id_card_photo-1770007725025-831494637.jpg"
+IMAGE_PATH = r"C:\Users\user\Desktop\ACS\OCR\KTP Extraction\ktp guestbook\MEI'26\id_card_photo-1780027002883-126547737.jpg"
 OUTPUT_DIR = "debug_output_ktp"
 
 logging.getLogger("ppocr").setLevel(logging.ERROR)
@@ -79,12 +79,15 @@ def run_debug_ktp(image_path):
         print("[ERROR] Failed to read image using cv2.")
         return
 
-    print("\n--- RUNNING STANDARD PREPROCESSOR ---")
+    print("\n--- RUNNING MINIMAL PREPROCESSOR (orientation + resize + padding only) ---")
     preprocessor = StandardPreprocessor(
         debug=True,
         debug_dir=os.path.join(OUTPUT_DIR, "preprocess")
     )
-    processed_image = preprocessor.preprocess(raw_image)
+    # minimal_preprocess() is the authoritative KTP path: orientation correction,
+    # resize to 1000 px, white border. No geometric warping, deskewing, or
+    # image enhancement that could degrade OCR on high-quality source images.
+    processed_image = preprocessor.minimal_preprocess(raw_image)
 
     cv2.imwrite(
         os.path.join(OUTPUT_DIR, "final_input_to_ocr.jpg"),
