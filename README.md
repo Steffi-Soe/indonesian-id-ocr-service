@@ -7,10 +7,9 @@
 ![OCR](https://img.shields.io/badge/PaddleOCR-Enabled-orange)
 ![Status](https://img.shields.io/badge/Status-Active-success)
 
-This project provides a **Flask-based REST API** for extracting structured data from Indonesian identity documents, including **ID Cards (KTP)** and **Driving Licenses (SIM)**, using **PaddleOCR**.
+This project provides a **Flask-based REST API** for extracting structured data from Indonesian identity documents, including **ID Cards (KTP)** and  **Driving Licenses (SIM)** , using  **PaddleOCR** .
 
-It automatically identifies the document type, performs Optical Character Recognition (OCR), intelligently processes the text, and formats the results into a clean, standardized JSON structure.
-The pipeline is designed to be **robust against real-world capture issues**, including **minor skew, rotation, and tilt** commonly found in mobile-captured document images.
+It automatically identifies the document type, performs Optical Character Recognition (OCR), intelligently processes the text, and formats the results into a clean, standardized JSON structure. The pipeline is designed to be  **robust against real-world OCR noise** , including character substitutions, truncated fields, missing separators, and mobile-capture imperfections.
 
 ---
 
@@ -18,12 +17,18 @@ The pipeline is designed to be **robust against real-world capture issues**, inc
 
 * 🔤 **OCR powered by PaddleOCR (Bahasa Indonesia model)**
 * ✅ **Multi-Document Support:** Accurately processes both KTP and SIM cards
-* 🔍 **Automatic Document Identification**
-* 🧭 **Skew, rotation, and tilt handling** to improve OCR accuracy on misaligned documents
-* 🧠 **Smart text processing** using spatial, confidence-based, and regex-driven logic
-* 🧹 **Post-processing & normalization** of extracted fields
-* 🧪 **OCR diagnostics & debugging support** (bounding boxes, legends, traceability)
-* 📦 **Standardized JSON Output** across document types
+* 🔍 **Automatic Document Identification** via keyword scoring
+* 🧭 **Orientation correction** using face detection (portrait → landscape)
+* 🧠 **Multi-stage post-processing pipeline:**
+  * Fuzzy NIK extraction with OCR character substitution (`L→1`, `O→0`, etc.)
+  * 15→16 digit NIK reconstruction from partial reads
+  * Bidirectional NIK ↔ field cross-validation (date, gender)
+  * Robust date normalization with year repair and multi-strategy fallback
+  * Place-name fuzzy correction against an Indonesian administrative-area database
+* 🧹 **Field normalization** for Pekerjaan, Status Perkawinan, Kewarganegaraan, and more
+* 📊 **Per-field confidence scoring** with A–F document grading
+* 🐛 **10-stage field-level debugger** with annotated image output
+* 📦 **Standardized JSON output** across document types
 
 ---
 
@@ -52,46 +57,50 @@ pip install -r requirements.txt
 ## 📁 Project Structure
 
 ```
-document-ocr/
+indonesian-id-ocr-service/
 │
-├── app.py                   # Flask API entry point, handles requests & responses
-├── document_processor.py    # Orchestrates preprocessing, OCR, and document routing
-├── image_preprocessor.py    # Handles image normalization, skew/rotation/tilt correction
-├── ktp_extractor.py         # KTP-specific field extraction and normalization logic
-├── sim_extractor.py         # SIM-specific field extraction and normalization logic
-├── debug_visualizer.py      # OCR debugging tools (bounding boxes, legends, traces)
+├── app.py                    # Flask API entry point — request handling & logging
+├── document_processor.py     # Pipeline controller: preprocessing → OCR → extraction → scoring
 │
-├── uploads/                 # Temporary storage for uploaded document images
-├── requirements.txt         # Python dependencies
-├── README.md                # Project documentation
-└── .gitignore               # Git ignore rules
+├── ktp_extractor.py          # KTP field extraction, normalization, and JSON formatting
+├── sim_extractor.py          # SIM field extraction (legacy & smart layout strategies)
+│
+├── image_preprocessor.py     # StandardPreprocessor (KTP) + SmartSIMPreprocessor
+├── nik_fuzzy.py              # Fuzzy NIK extraction: char substitution + 15→16 reconstruction
+├── nik_cross_validator.py    # Bidirectional NIK ↔ demographic field repair
+├── date_normalizer.py        # Robust DD-MM-YYYY normalization with year repair
+├── confidence_scorer.py      # Per-field scoring, cross-check validation, A–F grading
+├── ocr_corrector.py          # Char substitution + fuzzy place-name correction
+│
+├── debug_extraction.py       # 10-stage field-level KTP extraction debugger
+│
+├── uploads/                  # Temporary storage for uploaded images
+├── ocr_logs/                 # Monthly OCR prediction logs (image + JSON)
+├── requirements.txt          # Python dependencies
+├── README.md                 # Project documentation
+└── .gitignore
 ```
 
 ---
 
 ## 🧠 How It Works
 
-1. A client sends a POST request to the API with an image file (**KTP or SIM**) as `multipart/form-data`.
+1. A client sends a `POST /ocr/document` request with an image file as `multipart/form-data`.
 2. The Flask server validates and temporarily stores the image.
-3. **Preprocessing logic** normalizes the image and mitigates minor **skew, rotation, or tilt** when detected.
-4. The **DocumentProcessor** identifies whether the document is a KTP or SIM.
-5. OCR is performed using PaddleOCR.
-6. Extractors (`KTPExtractor` / `SIMExtractor`) analyze bounding boxes, spatial alignment, and confidence scores.
-7. Fields are cleaned, normalized, and structured.
-8. The API returns a standardized JSON response.
+3. **Orientation correction** — face detection rotates portrait images to landscape.
+4. **Minimal preprocessing** — resize to 1000 px wide + white border padding. No sharpening, CLAHE, or deskew; the original pixel data reaches the OCR engine intact.
+5. **Document type detection** — keyword scoring distinguishes KTP from SIM.
+6. **OCR** via PaddleOCR (Bahasa Indonesia, `use_textline_orientation=True`).
+7. **Field extraction** (`KTPExtractor`) — spatial bounding-box alignment, fuzzy key matching, inline and geometric value recovery.
+8. **NIK fuzzy repair** (`NIKFuzzyExtractor`) — OCR char substitution, 15→16 digit reconstruction, structural scoring.
+9. **Date normalization** (`DateNormalizer`) — multi-strategy parsing, year repair for corrupted 4-digit years (e.g. `1392 → 1992`).
+10. **Cross-validation** (`NIKCrossValidator`) — NIK encodes birth date and gender; mismatches are auto-corrected with NIK as ground truth.
+11. **Confidence scoring** (`KTPConfidenceScorer`) — per-field scores, NIK structural bonus, composite A–F grade.
+12. The API returns a standardized JSON response.
 
----
+### SIM Pipeline
 
-## 🧭 Orientation & OCR Robustness
-
-To improve accuracy on real-world images, the pipeline includes logic and analysis for:
-
-* Detecting **slight rotation and skew** based on OCR bounding box geometry
-* Ensuring consistent line alignment and label–value pairing
-* Applying corrections **only when necessary** to avoid disrupting already-correct cases
-* Using OCR legends and confidence patterns to guide incremental improvements
-
-Debug artifacts (visual bounding boxes, OCR legends, and extraction traces) are available to support tuning and analysis.
+Follows the same orientation and OCR steps, then routes to either a **Legacy** (numbered-section) or **Smart** (free-form) extraction strategy based on layout detection. A higher-resolution preprocessing path (`SmartSIMPreprocessor`) is used as a fallback for lower-quality captures.
 
 ---
 
@@ -107,6 +116,8 @@ The API will be available at:
 http://0.0.0.0:5000
 ```
 
+The server uses **Waitress** (4 threads, 600 s timeout) in production mode.
+
 ---
 
 ## 📤 Example API Request
@@ -121,7 +132,7 @@ POST /ocr/document
 
 * **Type:** `form-data`
 * **Key:** `image`
-* **Value:** Image file (e.g., `ktp.jpg`)
+* **Value:** Image file (`jpg`, `jpeg`, or `png`)
 
 ### Example cURL
 
@@ -129,13 +140,12 @@ POST /ocr/document
 curl -X POST http://localhost:5000/ocr/document \
      -F "image=@/path/to/your_image.jpg"
 ```
-*Replace `/path/to/your_image.jpg` with the actual path to your image file.*
 
 ---
 
-### **✅ Example Responses**
+## ✅ Example Responses
 
-#### **KTP Response**
+### KTP Response
 
 ```json
 {
@@ -146,7 +156,7 @@ curl -X POST http://localhost:5000/ocr/document \
         "document_type": "KTP",
         "nomor": "3201123456789001",
         "nama": "BUDI SANTOSO",
-        "tempat_lahir": "Bandung",
+        "tempat_lahir": "BANDUNG",
         "tgl_lahir": "01-01-1990",
         "jenis_kelamin": "LAKI-LAKI",
         "agama": "ISLAM",
@@ -154,10 +164,10 @@ curl -X POST http://localhost:5000/ocr/document \
         "pekerjaan": "KARYAWAN SWASTA",
         "kewarganegaraan": "WNI",
         "alamat": {
-            "name": "Jl. Merdeka No. 10",
+            "name": "JL. MERDEKA NO. 10",
             "rt_rw": "001/002",
-            "kel_desa": "Cihampelas",
-            "kecamatan": "Cimahi",
+            "kel_desa": "CIHAMPELAS",
+            "kecamatan": "CIMAHI",
             "kabupaten": "KABUPATEN BANDUNG",
             "provinsi": "JAWA BARAT"
         }
@@ -165,7 +175,7 @@ curl -X POST http://localhost:5000/ocr/document \
 }
 ```
 
-#### **SIM Response**
+### SIM Response
 
 ```json
 {
@@ -178,14 +188,13 @@ curl -X POST http://localhost:5000/ocr/document \
         "nama": "MUHAMMAD YUNUS",
         "tempat_lahir": "JAKARTA",
         "tgl_lahir": "08-10-1998",
-        "jenis_kelamin": "PRIA",
+        "jenis_kelamin": "LAKI-LAKI",
         "agama": null,
         "status_perkawinan": null,
         "pekerjaan": "PELAJAR/MAHASISWA",
         "kewarganegaraan": null,
-        "berlaku_sampai": "06-04-2028",
         "alamat": {
-            "name": "JL.H.OYAR NO.24 PEGANGSAAN DUA",
+            "name": "JL. H. OYAR NO. 24 PEGANGSAAN DUA",
             "rt_rw": "002/002",
             "kel_desa": null,
             "kecamatan": "KELAPA GADING",
@@ -213,24 +222,30 @@ curl -X POST http://localhost:5000/ocr/document \
 
 ## ⚙️ Customization
 
-You can tune or extend the system by modifying:
-
-* **OCR preprocessing & orientation handling** in `document_processor.py`
-* **Field definitions & keywords** in extractor files
-* **Regex patterns & confidence thresholds** for specific edge cases
-* **Debug visualization & traceability** to analyze OCR behavior
+| What to change                   | Where                                                         |
+| -------------------------------- | ------------------------------------------------------------- |
+| OCR char substitution table      | `nik_fuzzy.py`→`OCR_TO_DIGIT`                            |
+| Occupation canonical map         | `ktp_extractor.py`→`PEKERJAAN_CANONICAL`                 |
+| Marital status / religion values | `ktp_extractor.py`→`STATUS_PERKAWINAN_CANONICAL`         |
+| Indonesian place database        | `ocr_corrector.py`→`_PROVINCES`,`_KOTA`,`_KABUPATEN` |
+| Field confidence weights         | `confidence_scorer.py`→`FIELD_WEIGHTS`                   |
+| NIK validity rules               | `nik_fuzzy.py`→`_validate_structure()`                   |
+| SIM layout keywords              | `sim_extractor.py`→`FuzzyMatcher.ANCHORS`                |
 
 ---
 
-## 🧪 Troubleshooting Guide
+## 🧪 Troubleshooting
 
-| Issue                             | Possible Cause         | Recommended Fix                                        |
-| --------------------------------- | ---------------------- | ------------------------------------------------------ |
-| OCR text misaligned               | Image skew or tilt     | Ensure good lighting; preprocessing handles minor tilt |
-| Low confidence fields             | Blurry or angled image | Use higher-resolution input                            |
-| OCR returned no results           | Poor image quality     | Retake image with clearer focus                        |
-| Could not determine document type | Non-KTP/SIM image      | Upload a valid Indonesian ID                           |
-| paddlepaddle not found            | Dependency missing     | Install `paddlepaddle` manually                        |
+| Issue                             | Possible Cause                             | Recommended Fix                                                        |
+| --------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------- |
+| NIK shows wrong value             | OCR misread leading digit                  | Check Stage 6 of debugger; verify original image quality               |
+| `tempat_lahir`empty             | Date separator swallowed by OCR            | NIK cross-validator auto-injects date; place extracted from prefix     |
+| Wrong `status_perkawinan`       | B→C OCR confusion in "BELUM"              | Pre-normalization handles `CEL UM`→`BELUM KAWIN`                  |
+| Wrong `pekerjaan`               | `HARIANCEPAS`instead of `HARIAN LEPAS` | Regex covers C→L confusion; fuzzy fallback catches remaining variants |
+| Low overall grade                 | Several fields missing or low-confidence   | Run debugger to identify earliest failing stage                        |
+| OCR returned no results           | Poor image quality                         | Use a clearer, higher-resolution image with even lighting              |
+| Could not determine document type | Non-KTP/SIM image                          | Upload a valid Indonesian identity document                            |
+| `paddlepaddle`not found         | Dependency missing                         | Install `paddlepaddle`manually (see Requirements)                    |
 
 ---
 
@@ -239,5 +254,3 @@ You can tune or extend the system by modifying:
 **Developed by:** *Steffi Soeroredjo*
 📧 Email: [steffisoeroredjo5@gmail.com](mailto:steffisoeroredjo5@gmail.com)
 🌐 GitHub: [https://github.com/Steffi-Soe](https://github.com/Steffi-Soe)
-
----
